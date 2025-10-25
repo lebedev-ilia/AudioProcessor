@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any
 import time
 import logging
-from schemas.models import ExtractorResult
+from src.schemas.models import ExtractorResult
 
 logger = logging.getLogger(__name__)
 

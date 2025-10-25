@@ -18,6 +18,9 @@ from .schemas.models import (
     TaskStatusResponse,
     TaskStatus
 )
+from .celery_app import celery_app
+from .extractors import discover_extractors
+from .monitor.metrics import get_metrics
 
 # Configure logging
 logging.basicConfig(
@@ -117,22 +120,29 @@ async def process_audio(request: ProcessRequest):
     a task ID for tracking the processing status.
     """
     try:
-        # Validate request
-        if not request.audio_uri.startswith("s3://"):
+        # Validate request (allow local files for testing)
+        if not (request.audio_uri.startswith("s3://") or request.audio_uri.endswith(('.wav', '.mp3', '.flac', '.m4a'))):
             raise HTTPException(
                 status_code=400, 
-                detail="Invalid audio_uri. Must be an S3 URI (s3://bucket/path)"
+                detail="Invalid audio_uri. Must be an S3 URI (s3://bucket/path) or local audio file"
             )
         
-        # TODO: Implement actual processing logic
-        # For now, return a mock response
-        task_id = f"task_{int(time.time())}"
+        # Submit task to Celery
+        task = celery_app.send_task(
+            'src.celery_app.process_audio_task',
+            args=[request.video_id, request.audio_uri],
+            kwargs={
+                'task_id': request.task_id,
+                'dataset': request.dataset,
+                'meta': request.meta
+            }
+        )
         
-        logger.info(f"Received processing request for video_id: {request.video_id}")
+        logger.info(f"Submitted processing task {task.id} for video_id: {request.video_id}")
         
         return ProcessResponse(
             accepted=True,
-            celery_task_id=task_id,
+            celery_task_id=task.id,
             message="Audio processing request accepted"
         )
         
@@ -155,12 +165,41 @@ async def get_task_status(task_id: str):
         Task status information
     """
     try:
-        # TODO: Implement actual task status checking
-        # For now, return a mock response
+        # Get task result from Celery
+        task_result = celery_app.AsyncResult(task_id)
+        
+        if task_result.state == 'PENDING':
+            status = TaskStatus.PENDING
+            progress = 0.0
+            result = None
+            error = None
+        elif task_result.state == 'PROGRESS':
+            status = TaskStatus.PROCESSING
+            progress = task_result.info.get('progress', 0.0)
+            result = task_result.info
+            error = None
+        elif task_result.state == 'SUCCESS':
+            status = TaskStatus.COMPLETED
+            progress = 100.0
+            result = task_result.result
+            error = None
+        elif task_result.state == 'FAILURE':
+            status = TaskStatus.FAILED
+            progress = 0.0
+            result = None
+            error = str(task_result.info)
+        else:
+            status = TaskStatus.PENDING
+            progress = 0.0
+            result = None
+            error = None
+        
         return TaskStatusResponse(
             task_id=task_id,
-            status=TaskStatus.PENDING,
-            progress=0.0,
+            status=status,
+            progress=progress,
+            result=result,
+            error=error,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
@@ -179,50 +218,40 @@ async def list_extractors():
         List of available extractors with their information
     """
     try:
-        # TODO: Implement actual extractor discovery
-        extractors = [
-            {
-                "name": "mfcc_extractor",
-                "version": "0.1.0",
-                "description": "MFCC feature extraction",
-                "status": "available"
-            },
-            {
-                "name": "mel_extractor", 
-                "version": "0.1.0",
-                "description": "Mel spectrogram extraction",
-                "status": "available"
-            },
-            {
-                "name": "chroma_extractor",
-                "version": "0.1.0", 
-                "description": "Chroma feature extraction",
-                "status": "available"
-            },
-            {
-                "name": "loudness_extractor",
-                "version": "0.1.0",
-                "description": "RMS and loudness extraction", 
-                "status": "available"
-            },
-            {
-                "name": "vad_extractor",
-                "version": "0.1.0",
-                "description": "Voice Activity Detection",
-                "status": "available"
-            },
-            {
-                "name": "openl3_extractor",
-                "version": "0.1.0",
-                "description": "OpenL3 semantic embeddings",
-                "status": "available"
-            }
-        ]
+        # Get actual extractors
+        extractors = discover_extractors()
         
-        return {"extractors": extractors}
+        extractor_info = []
+        for extractor in extractors:
+            extractor_info.append({
+                "name": extractor.name,
+                "version": extractor.version,
+                "description": extractor.description,
+                "status": "available"
+            })
+        
+        return {"extractors": extractor_info}
         
     except Exception as e:
         logger.error(f"Error listing extractors: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/metrics")
+async def get_prometheus_metrics():
+    """
+    Get Prometheus metrics.
+    
+    Returns:
+        Prometheus metrics in text format
+    """
+    try:
+        from fastapi.responses import PlainTextResponse
+        metrics_data = get_metrics()
+        return PlainTextResponse(content=metrics_data, media_type="text/plain")
+        
+    except Exception as e:
+        logger.error(f"Error getting metrics: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

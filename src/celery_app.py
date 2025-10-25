@@ -3,15 +3,15 @@ Celery application configuration for AudioProcessor.
 """
 from celery import Celery
 from celery.schedules import crontab
-from config import get_settings
+from .config import get_settings
 
 settings = get_settings()
 
 # === Create Celery App ===
 celery_app = Celery(
     "audio_processor",
-    broker=settings.celery_broker_url,
-    backend=settings.celery_result_backend,
+    broker=str(settings.celery_broker_url),
+    backend=str(settings.celery_result_backend),
     include=["src.celery_app"],
 )
 
@@ -48,9 +48,10 @@ celery_app.conf.update(
 
 # === Queue Routing ===
 celery_app.conf.task_routes = {
-    "src.celery_app.process_audio_task": {"queue": "audio_queue"},
-    "src.celery_app.process_audio_gpu_task": {"queue": "gpu_queue"},
-    "src.celery_app.health_check_task": {"queue": "system_queue"},
+    "src.celery_app.process_audio_task": {"queue": "celery"},
+    "src.celery_app.process_audio_gpu_task": {"queue": "celery"},
+    "src.celery_app.health_check_task": {"queue": "celery"},
+    "src.celery_app.simple_test_task": {"queue": "celery"},
 }
 
 # === Beat Schedule ===
@@ -69,8 +70,11 @@ def process_audio_task(self, video_id: str, audio_uri: str, **kwargs):
     """
     CPU-based audio feature extraction.
     """
-    import logging, time
+    import logging, time, tempfile, os
     from datetime import datetime
+    from src.extractors import discover_extractors
+    from src.storage.s3_client import S3Client
+    from src.schemas.models import ManifestModel, ExtractorResult
 
     logger = logging.getLogger(__name__)
 
@@ -79,46 +83,104 @@ def process_audio_task(self, video_id: str, audio_uri: str, **kwargs):
 
         self.update_state(state="PROGRESS", meta={"progress": 0, "status": "Initializing..."})
 
-        steps = [
-            "Downloading audio",
-            "Validating format",
-            "Extracting MFCC",
-            "Extracting Mel spectrogram",
-            "Extracting Chroma",
-            "Calculating RMS/Loudness",
-            "Running Voice Activity Detection",
-            "Generating embeddings (placeholder)",
-            "Uploading to S3",
-            "Finalizing manifest",
-        ]
+        # Initialize S3 client
+        s3_client = S3Client()
+        
+        # Create temporary directory
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Step 1: Download audio file (or use local file for testing)
+            self.update_state(state="PROGRESS", meta={"progress": 10, "status": "Loading audio..."})
+            
+            if audio_uri.startswith("s3://"):
+                # S3 file - download it
+                local_audio_path = s3_client.download_file(audio_uri, tmp_dir)
+                logger.info(f"Downloaded audio to: {local_audio_path}")
+            else:
+                # Local file - copy it to temp directory
+                import shutil
+                filename = os.path.basename(audio_uri)
+                local_audio_path = os.path.join(tmp_dir, filename)
+                shutil.copy2(audio_uri, local_audio_path)
+                logger.info(f"Copied local audio to: {local_audio_path}")
 
-        for i, step in enumerate(steps):
-            time.sleep(1)
-            progress = int((i + 1) / len(steps) * 100)
-            self.update_state(
-                state="PROGRESS",
-                meta={
-                    "progress": progress,
-                    "status": step,
-                    "step": i + 1,
-                    "total_steps": len(steps),
-                },
+            # Step 2: Get extractors
+            self.update_state(state="PROGRESS", meta={"progress": 20, "status": "Initializing extractors..."})
+            extractors = discover_extractors()
+            logger.info(f"Found {len(extractors)} extractors")
+
+            # Step 3: Run extractors
+            results = []
+            total_extractors = len(extractors)
+            
+            for i, extractor in enumerate(extractors):
+                progress = 20 + int((i / total_extractors) * 60)
+                self.update_state(
+                    state="PROGRESS", 
+                    meta={
+                        "progress": progress, 
+                        "status": f"Running {extractor.name}...",
+                        "extractor": extractor.name,
+                        "step": i + 1,
+                        "total_steps": total_extractors
+                    }
+                )
+                
+                try:
+                    logger.info(f"Running extractor: {extractor.name}")
+                    result = extractor.run(local_audio_path, tmp_dir)
+                    results.append(result)
+                    logger.info(f"Completed {extractor.name}: {result.success}")
+                    
+                except Exception as e:
+                    logger.error(f"Extractor {extractor.name} failed: {e}")
+                    # Create error result
+                    error_result = ExtractorResult(
+                        name=extractor.name,
+                        version=extractor.version,
+                        success=False,
+                        error=str(e)
+                    )
+                    results.append(error_result)
+
+            # Step 4: Create manifest
+            self.update_state(state="PROGRESS", meta={"progress": 85, "status": "Creating manifest..."})
+            
+            manifest = ManifestModel(
+                video_id=video_id,
+                task_id=kwargs.get('task_id'),
+                dataset=kwargs.get('dataset', 'default'),
+                timestamp=datetime.utcnow().isoformat(),
+                extractors=results,
+                schema_version="audio_manifest_v1"
             )
-            logger.info(f"[CPU] Step {i + 1}/{len(steps)}: {step}")
 
+            # Step 5: Upload manifest (or save locally for testing)
+            self.update_state(state="PROGRESS", meta={"progress": 95, "status": "Saving manifest..."})
+            try:
+                manifest_uri = s3_client.upload_manifest(
+                    manifest.dict(), 
+                    video_id, 
+                    kwargs.get('dataset', 'default')
+                )
+            except Exception as e:
+                # Fallback: save manifest locally for testing
+                logger.warning(f"S3 upload failed, saving locally: {e}")
+                import json
+                local_manifest_path = f"manifest_{video_id}.json"
+                with open(local_manifest_path, 'w') as f:
+                    json.dump(manifest.dict(), f, indent=2)
+                manifest_uri = f"file://{os.path.abspath(local_manifest_path)}"
+                logger.info(f"Manifest saved locally: {manifest_uri}")
+
+        # Final result
         result = {
             "status": "completed",
             "video_id": video_id,
             "audio_uri": audio_uri,
-            "manifest_uri": f"s3://{settings.s3_bucket}/manifests/{video_id}.json",
-            "processing_time": len(steps),
-            "extractors": [
-                "mfcc_extractor",
-                "mel_extractor",
-                "chroma_extractor",
-                "loudness_extractor",
-                "vad_extractor",
-            ],
+            "manifest_uri": manifest_uri,
+            "extractors": [r.name for r in results],
+            "successful_extractors": [r.name for r in results if r.success],
+            "failed_extractors": [r.name for r in results if not r.success],
             "timestamp": datetime.utcnow().isoformat(),
         }
 
@@ -198,23 +260,36 @@ def health_check_task():
     """
     import logging
     from datetime import datetime
-    import psutil
 
     logger = logging.getLogger(__name__)
 
     try:
-        mem = psutil.virtual_memory()
+        # Simplified health check without psutil for now
         return {
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "memory_usage_percent": mem.percent,
-            "celery_workers": 1,  # TODO: add discovery
-            "queue_length": 0,  # TODO: pull from Redis
+            "celery_workers": 1,
+            "queue_length": 0,
         }
 
     except Exception as e:
         logger.exception("Health check failed")
         return {"status": "unhealthy", "error": str(e), "timestamp": datetime.utcnow().isoformat()}
+
+
+@celery_app.task(name="src.celery_app.simple_test_task")
+def simple_test_task(message):
+    """
+    Simple test task for debugging.
+    """
+    import logging
+    import time
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"Processing simple test task: {message}")
+    
+    time.sleep(2)
+    return f"Processed: {message}"
 
 
 if __name__ == "__main__":

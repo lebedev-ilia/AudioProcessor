@@ -4,15 +4,15 @@
 
 ## 🎯 Возможности
 
-### CORE Extractors (MVP)
+### ✅ Реализованные Extractors
 - **MFCC** - Mel-frequency cepstral coefficients (13 + delta)
-- **Mel Spectrogram** - 64 мел-банда
-- **Chroma** - 12 тональных классов
-- **RMS/Loudness** - энергетические характеристики
-- **VAD** - Voice Activity Detection
-- **OpenL3** - семантические эмбеддинги (512 dim)
+- **Mel Spectrogram** - 64 мел-банда с статистическими признаками
+- **Chroma** - 12 тональных классов для гармонического анализа
+- **RMS/Loudness** - энергетические характеристики (RMS, LUFS)
+- **VAD** - Voice Activity Detection с извлечением F0
+- **CLAP** - семантические аудио эмбеддинги (512 dim)
 
-### ADVANCED Extractors
+### 🔄 Планируемые Extractors
 - **ASR** - автоматическое распознавание речи (Whisper)
 - **Sentiment** - анализ сентимента
 - **NER** - извлечение именованных сущностей
@@ -57,44 +57,81 @@ audio_processor/
 1. **Клонирование и настройка**
 ```bash
 git clone <repository-url>
-cd audio_processor
+cd AudioProcessor
 
 # Создание виртуального окружения
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
 # или
-venv\Scripts\activate     # Windows
+.venv\Scripts\activate     # Windows
 
 # Установка зависимостей
 pip install -r requirements.txt
 ```
 
-2. **Запуск через Docker Compose**
+2. **Запуск Redis (требуется для Celery)**
 ```bash
-docker-compose up -d
+# macOS с Homebrew
+brew services start redis
+
+# Или через Docker
+docker run -d -p 6379:6379 redis:alpine
 ```
 
-3. **Проверка статуса**
+3. **Запуск Celery Worker**
+```bash
+cd AudioProcessor
+source .venv/bin/activate
+PYTHONPATH=/path/to/AudioProcessor/src celery -A src.celery_app worker --loglevel=info --concurrency=1
+```
+
+4. **Запуск FastAPI сервера**
+```bash
+cd AudioProcessor
+source .venv/bin/activate
+PYTHONPATH=/path/to/AudioProcessor/src python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+5. **Проверка статуса**
 ```bash
 curl http://localhost:8000/health
+```
+
+### Docker Compose (рекомендуется)
+```bash
+docker-compose up -d
 ```
 
 ### API Endpoints
 
 - `POST /process` - обработка аудио файла
+- `GET /task/{task_id}` - статус задачи
+- `GET /extractors` - список доступных экстракторов
 - `GET /health` - проверка здоровья сервиса
 - `GET /metrics` - Prometheus метрики
+- `GET /docs` - Swagger UI документация
 
 ### Пример запроса
 
 ```bash
+# Обработка аудио файла
 curl -X POST http://localhost:8000/process \
   -H "Content-Type: application/json" \
   -d '{
     "video_id": "test_video_123",
-    "audio_uri": "s3://bucket/audio.wav",
-    "dataset": "test"
+    "audio_uri": "test_audio.wav",
+    "task_id": "task_456",
+    "dataset": "test",
+    "meta": {
+      "test": true
+    }
   }'
+
+# Проверка статуса задачи
+curl http://localhost:8000/task/task_456
+
+# Список экстракторов
+curl http://localhost:8000/extractors
 ```
 
 ## 🔧 Разработка
@@ -141,8 +178,27 @@ black src/
 mypy src/
 ```
 
+## ✅ Статус проекта
+
+### 🎉 Полностью функциональные компоненты:
+- ✅ **FastAPI сервер** - REST API с полной документацией
+- ✅ **Celery Worker** - асинхронная обработка задач
+- ✅ **6 Audio Extractors** - все экстракторы работают корректно
+- ✅ **Redis интеграция** - очереди и результаты
+- ✅ **S3 клиент** - с fallback на локальное сохранение
+- ✅ **Мониторинг задач** - отслеживание прогресса в реальном времени
+- ✅ **Обработка ошибок** - graceful degradation
+
+### 🧪 Протестировано:
+- ✅ Обработка аудио через API
+- ✅ Все экстракторы (MFCC, Mel, Chroma, Loudness, VAD, CLAP)
+- ✅ Создание манифестов
+- ✅ Мониторинг задач
+- ✅ Health checks
+
 ## 📊 Мониторинг
 
+- **API документация**: `http://localhost:8000/docs`
 - **Prometheus метрики**: `http://localhost:8000/metrics`
 - **Flower (Celery)**: `http://localhost:5555`
 - **Grafana**: `http://localhost:3000` (admin/admin)

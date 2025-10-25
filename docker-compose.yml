@@ -48,18 +48,21 @@ services:
       - MASTERML_URL=http://masterml:8000
       - LOG_LEVEL=INFO
       - DEBUG=true
+      - PYTHONPATH=/app
     depends_on:
       redis:
         condition: service_healthy
       minio:
         condition: service_healthy
     volumes:
+      - ./test_audio.wav:/app/test_audio.wav:ro
       - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
 
   # AudioProcessor Worker
   audio-worker:
