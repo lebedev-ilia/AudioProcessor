@@ -1,7 +1,7 @@
 """
 Pydantic models for AudioProcessor.
 """
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from enum import Enum
@@ -25,7 +25,7 @@ class ProcessRequest(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "video_id": "video_123",
                 "audio_uri": "s3://bucket/audio.wav",
@@ -46,7 +46,7 @@ class ProcessResponse(BaseModel):
     message: Optional[str] = Field(None, description="Additional message")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "accepted": True,
                 "celery_task_id": "celery-task-789",
@@ -65,7 +65,7 @@ class ExtractorResult(BaseModel):
     processing_time: Optional[float] = Field(None, description="Processing time in seconds")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "name": "mfcc_extractor",
                 "version": "0.1.0",
@@ -91,7 +91,7 @@ class ManifestModel(BaseModel):
     manifest_uri: Optional[str] = Field(None, description="S3 URI to manifest file")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "video_id": "video_123",
                 "task_id": "task_456",
@@ -120,7 +120,7 @@ class HealthResponse(BaseModel):
     dependencies: Dict[str, str] = Field(default_factory=dict, description="Dependency status")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "status": "healthy",
                 "timestamp": "2023-10-25T10:30:00Z",
@@ -145,7 +145,7 @@ class TaskStatusResponse(BaseModel):
     updated_at: Optional[datetime] = Field(None, description="Last update time")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "task_id": "celery-task-789",
                 "status": "processing",
@@ -164,7 +164,7 @@ class ErrorResponse(BaseModel):
     request_id: Optional[str] = Field(None, description="Request identifier")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "error": "Invalid audio file format",
                 "detail": "File must be in WAV, MP3, or FLAC format",

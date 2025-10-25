@@ -9,8 +9,8 @@ import time
 from datetime import datetime
 from typing import Dict, Any
 
-from config import get_settings, Settings
-from schemas.models import (
+from .config import get_settings, Settings
+from .schemas.models import (
     ProcessRequest, 
     ProcessResponse, 
     HealthResponse, 
