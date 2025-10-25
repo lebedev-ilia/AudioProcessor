@@ -22,8 +22,11 @@ class MelExtractor(BaseExtractor):
     """Extractor for Mel spectrogram features."""
     
     name = "mel_extractor"
-    version = "0.1.0"
+    version = "1.0.0"
     description = "Mel spectrogram feature extraction with 64 mel bands"
+    category = "core"
+    dependencies = ["librosa", "numpy"]
+    estimated_duration = 3.0
     
     def __init__(self):
         """Initialize Mel extractor with default parameters."""

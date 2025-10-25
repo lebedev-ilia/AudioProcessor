@@ -22,8 +22,11 @@ class MFCCExtractor(BaseExtractor):
     """Extractor for MFCC and delta MFCC features."""
     
     name = "mfcc_extractor"
-    version = "0.1.0"
+    version = "1.0.0"
     description = "MFCC and delta MFCC feature extraction with statistical aggregation"
+    category = "core"
+    dependencies = ["librosa", "numpy"]
+    estimated_duration = 5.0
     
     def __init__(self):
         """Initialize MFCC extractor with default parameters."""

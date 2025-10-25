@@ -1,10 +1,14 @@
-# ===== Multi-stage build для оптимизации размера =====
+# ===== GPU версия AudioProcessor =====
 
 # ===== Stage 1: Build stage =====
-FROM python:3.12.3-slim as builder
+FROM nvidia/cuda:12.1-devel-ubuntu22.04 as builder
 
-# Установка системных зависимостей для сборки
+# Установка Python и системных зависимостей для сборки
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
     build-essential \
     gcc \
     g++ \
@@ -12,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Создание символической ссылки для python
+RUN ln -s /usr/bin/python3.12 /usr/bin/python
 
 # Создание виртуального окружения
 RUN python -m venv /opt/venv
@@ -23,16 +30,21 @@ RUN pip install --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements.txt
 
 # ===== Stage 2: Runtime stage =====
-FROM python:3.12.3-slim as runtime
+FROM nvidia/cuda:12.1-runtime-ubuntu22.04 as runtime
 
-# Установка только runtime зависимостей
+# Установка Python и runtime зависимостей
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
     ffmpeg \
     libsndfile1 \
     libasound2-dev \
     curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Создание символической ссылки для python
+RUN ln -s /usr/bin/python3.12 /usr/bin/python
 
 # Копирование виртуального окружения из builder stage
 COPY --from=builder /opt/venv /opt/venv
@@ -47,12 +59,14 @@ WORKDIR /app
 # Копирование исходного кода
 COPY src/ /app/src/
 
-# Настройка окружения
+# Настройка окружения для GPU
 ENV PYTHONPATH=/app
 ENV CELERY_BROKER_URL=redis://redis:6379/0
 ENV CELERY_RESULT_BACKEND=redis://redis:6379/0
 ENV TRANSFORMERS_CACHE=/app/.cache
 ENV TORCH_HOME=/app/.cache/torch
+ENV CUDA_HOME=/usr/local/cuda
+ENV CUDA_VISIBLE_DEVICES=0
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 

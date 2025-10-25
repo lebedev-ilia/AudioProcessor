@@ -33,8 +33,11 @@ class CLAPExtractor(BaseExtractor):
     """Extractor for CLAP semantic audio embeddings."""
     
     name = "clap_extractor"
-    version = "0.1.0"
+    version = "1.0.0"
     description = "CLAP semantic audio embeddings extraction (512 dimensions)"
+    category = "advanced"
+    dependencies = ["openl3", "numpy"]
+    estimated_duration = 10.0
     
     def __init__(self):
         """Initialize CLAP extractor with default parameters."""

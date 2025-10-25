@@ -22,8 +22,11 @@ class ChromaExtractor(BaseExtractor):
     """Extractor for Chroma features (tonal/harmonic information)."""
     
     name = "chroma_extractor"
-    version = "0.1.0"
+    version = "1.0.0"
     description = "Chroma feature extraction for tonal/harmonic analysis"
+    category = "core"
+    dependencies = ["librosa", "numpy"]
+    estimated_duration = 4.0
     
     def __init__(self):
         """Initialize Chroma extractor with default parameters."""

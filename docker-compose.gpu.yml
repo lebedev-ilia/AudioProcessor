@@ -36,11 +36,11 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # AudioProcessor API
+  # AudioProcessor API (GPU)
   audio-processor:
     build: 
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gpu
     ports:
       - "8000:8000"
     environment:
@@ -54,6 +54,7 @@ services:
       - LOG_LEVEL=INFO
       - DEBUG=true
       - PYTHONPATH=/app
+      - CUDA_VISIBLE_DEVICES=0
     depends_on:
       redis:
         condition: service_healthy
@@ -71,17 +72,22 @@ services:
     restart: unless-stopped
     deploy:
       resources:
-        limits:
-          memory: 2G
         reservations:
-          memory: 1G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
 
-  # AudioProcessor Worker
+  # AudioProcessor Worker (GPU)
   audio-worker:
     build: 
       context: .
-      dockerfile: Dockerfile
-    command: celery -A src.celery_app worker --loglevel=info --queues=audio_queue --concurrency=2
+      dockerfile: Dockerfile.gpu
+    command: celery -A src.celery_app worker --loglevel=info --queues=audio_queue --concurrency=1
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -91,6 +97,7 @@ services:
       - S3_BUCKET=audio-features
       - LOG_LEVEL=INFO
       - PYTHONPATH=/app
+      - CUDA_VISIBLE_DEVICES=0
     depends_on:
       redis:
         condition: service_healthy
@@ -100,18 +107,23 @@ services:
       - ./logs:/app/logs
     restart: unless-stopped
     deploy:
-      replicas: 2
+      replicas: 1
       resources:
-        limits:
-          memory: 3G
         reservations:
-          memory: 2G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 6G
+        reservations:
+          memory: 4G
 
   # Flower - мониторинг Celery
   flower:
     build: 
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gpu
     command: celery -A src.celery_app flower --port=5555
     ports:
       - "5555:5555"

@@ -24,8 +24,11 @@ class VADExtractor(BaseExtractor):
     """Extractor for Voice Activity Detection and pitch features."""
     
     name = "vad_extractor"
-    version = "0.1.0"
+    version = "1.0.0"
     description = "Voice Activity Detection and fundamental frequency extraction"
+    category = "core"
+    dependencies = ["librosa", "numpy"]
+    estimated_duration = 6.0
     
     def __init__(self):
         """Initialize VAD extractor with default parameters."""

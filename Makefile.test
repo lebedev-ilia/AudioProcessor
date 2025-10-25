@@ -1,0 +1,66 @@
+# Test Makefile for AudioProcessor
+
+.PHONY: test test-unit test-integration test-performance test-all test-coverage test-lint test-clean
+
+# Default test target
+test: test-unit
+
+# Unit tests only
+test-unit:
+	pytest src/tests/ -m "unit" -v --tb=short
+
+# Integration tests only
+test-integration:
+	pytest src/tests/ -m "integration" -v --tb=short --integration
+
+# Performance tests only
+test-performance:
+	pytest src/tests/ -m "performance" -v --tb=short --performance
+
+# All tests
+test-all:
+	pytest src/tests/ -v --tb=short --integration --performance
+
+# Tests with coverage
+test-coverage:
+	pytest src/tests/ -v --cov=src --cov-report=html --cov-report=term-missing
+
+# Tests for specific components
+test-api:
+	pytest src/tests/test_api_endpoints.py -v
+
+test-celery:
+	pytest src/tests/test_celery_tasks.py -v
+
+test-s3:
+	pytest src/tests/test_s3_client.py -v
+
+test-extractors:
+	pytest src/tests/test_extractors.py src/tests/test_extractors_detailed.py -v
+
+# Lint tests
+test-lint:
+	flake8 src/
+	black --check src/
+	mypy src/
+
+# Clean test artifacts
+test-clean:
+	rm -rf htmlcov/
+	rm -rf .coverage
+	rm -rf .pytest_cache/
+	rm -rf src/tests/__pycache__/
+	find src/tests/ -name "*.pyc" -delete
+	find src/tests/ -name "__pycache__" -type d -exec rm -rf {} +
+
+# Quick test (unit tests only, no coverage)
+test-quick:
+	pytest src/tests/ -m "unit" -v --tb=short -x
+
+# Test specific file
+test-file:
+	pytest $(FILE) -v
+
+# Test with specific marker
+test-marker:
+	pytest src/tests/ -m "$(MARKER)" -v

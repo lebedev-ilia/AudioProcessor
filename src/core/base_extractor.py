@@ -17,6 +17,9 @@ class BaseExtractor(ABC):
     name: str = "base_extractor"
     version: str = "0.1.0"
     description: str = "Base extractor"
+    category: str = "core"
+    dependencies: list = []
+    estimated_duration: float = 1.0
     
     def __init__(self):
         """Initialize the extractor."""
@@ -100,8 +103,8 @@ class BaseExtractor(ABC):
             self.logger.error("Input URI is empty")
             return False
         
-        # Check if it's an S3 URI
-        if not input_uri.startswith("s3://"):
+        # Accept both S3 URIs and local file paths for testing
+        if not (input_uri.startswith("s3://") or input_uri.startswith("/") or input_uri.endswith(('.wav', '.mp3', '.flac'))):
             self.logger.error(f"Invalid URI format: {input_uri}")
             return False
         

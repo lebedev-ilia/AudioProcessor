@@ -7,7 +7,7 @@ import numpy as np
 import soundfile as sf
 import tempfile
 import os
-from extractors import discover_extractors
+from src.extractors import discover_extractors
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ def test_extractor_discovery():
 
 def test_mfcc_extractor(sample_audio_file):
     """Test MFCC extractor."""
-    from extractors.mfcc_extractor import MFCCExtractor
+    from src.extractors.mfcc_extractor import MFCCExtractor
     
     extractor = MFCCExtractor()
     result = extractor.run(sample_audio_file, "/tmp")
@@ -82,7 +82,7 @@ def test_mfcc_extractor(sample_audio_file):
 
 def test_mel_extractor(sample_audio_file):
     """Test Mel spectrogram extractor."""
-    from extractors.mel_extractor import MelExtractor
+    from src.extractors.mel_extractor import MelExtractor
     
     extractor = MelExtractor()
     result = extractor.run(sample_audio_file, "/tmp")
@@ -103,7 +103,7 @@ def test_mel_extractor(sample_audio_file):
 
 def test_chroma_extractor(sample_audio_file):
     """Test Chroma extractor."""
-    from extractors.chroma_extractor import ChromaExtractor
+    from src.extractors.chroma_extractor import ChromaExtractor
     
     extractor = ChromaExtractor()
     result = extractor.run(sample_audio_file, "/tmp")
@@ -124,7 +124,7 @@ def test_chroma_extractor(sample_audio_file):
 
 def test_loudness_extractor(sample_audio_file):
     """Test Loudness extractor."""
-    from extractors.loudness_extractor import LoudnessExtractor
+    from src.extractors.loudness_extractor import LoudnessExtractor
     
     extractor = LoudnessExtractor()
     result = extractor.run(sample_audio_file, "/tmp")
@@ -144,7 +144,7 @@ def test_loudness_extractor(sample_audio_file):
 
 def test_vad_extractor(sample_audio_file):
     """Test VAD extractor."""
-    from extractors.vad_extractor import VADExtractor
+    from src.extractors.vad_extractor import VADExtractor
     
     extractor = VADExtractor()
     result = extractor.run(sample_audio_file, "/tmp")
@@ -163,7 +163,7 @@ def test_vad_extractor(sample_audio_file):
 
 def test_clap_extractor(sample_audio_file):
     """Test CLAP extractor."""
-    from extractors.clap_extractor import CLAPExtractor
+    from src.extractors.clap_extractor import CLAPExtractor
     
     extractor = CLAPExtractor()
     result = extractor.run(sample_audio_file, "/tmp")

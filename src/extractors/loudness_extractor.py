@@ -25,8 +25,11 @@ class LoudnessExtractor(BaseExtractor):
     """Extractor for RMS energy and loudness features."""
     
     name = "loudness_extractor"
-    version = "0.1.0"
+    version = "1.0.0"
     description = "RMS energy and LUFS loudness feature extraction"
+    category = "core"
+    dependencies = ["librosa", "numpy"]
+    estimated_duration = 2.0
     
     def __init__(self):
         """Initialize Loudness extractor with default parameters."""

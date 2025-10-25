@@ -1,0 +1,155 @@
+# ===== Docker Makefile для AudioProcessor =====
+
+.PHONY: help build build-gpu up up-gpu down logs clean test-docker
+
+# Переменные
+DOCKER_COMPOSE = docker-compose
+DOCKER_COMPOSE_GPU = docker-compose -f docker-compose.gpu.yml
+IMAGE_NAME = audio-processor
+TAG = latest
+
+help: ## Показать справку
+	@echo "Доступные команды:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# ===== Сборка образов =====
+build: ## Собрать CPU образ
+	@echo "🔨 Сборка CPU образа..."
+	$(DOCKER_COMPOSE) build --no-cache
+
+build-gpu: ## Собрать GPU образ
+	@echo "🔨 Сборка GPU образа..."
+	$(DOCKER_COMPOSE_GPU) build --no-cache
+
+build-all: build build-gpu ## Собрать все образы
+
+# ===== Запуск сервисов =====
+up: ## Запустить CPU версию
+	@echo "🚀 Запуск CPU версии..."
+	$(DOCKER_COMPOSE) up -d
+
+up-gpu: ## Запустить GPU версию
+	@echo "🚀 Запуск GPU версии..."
+	$(DOCKER_COMPOSE_GPU) up -d
+
+up-build: ## Запустить с пересборкой
+	@echo "🚀 Запуск с пересборкой..."
+	$(DOCKER_COMPOSE) up -d --build
+
+up-gpu-build: ## Запустить GPU версию с пересборкой
+	@echo "🚀 Запуск GPU версии с пересборкой..."
+	$(DOCKER_COMPOSE_GPU) up -d --build
+
+# ===== Остановка сервисов =====
+down: ## Остановить CPU версию
+	@echo "🛑 Остановка CPU версии..."
+	$(DOCKER_COMPOSE) down
+
+down-gpu: ## Остановить GPU версию
+	@echo "🛑 Остановка GPU версии..."
+	$(DOCKER_COMPOSE_GPU) down
+
+down-all: down down-gpu ## Остановить все версии
+
+# ===== Логи =====
+logs: ## Показать логи CPU версии
+	$(DOCKER_COMPOSE) logs -f
+
+logs-gpu: ## Показать логи GPU версии
+	$(DOCKER_COMPOSE_GPU) logs -f
+
+logs-api: ## Показать логи API
+	$(DOCKER_COMPOSE) logs -f audio-processor
+
+logs-worker: ## Показать логи Worker
+	$(DOCKER_COMPOSE) logs -f audio-worker
+
+logs-redis: ## Показать логи Redis
+	$(DOCKER_COMPOSE) logs -f redis
+
+logs-minio: ## Показать логи MinIO
+	$(DOCKER_COMPOSE) logs -f minio
+
+# ===== Тестирование =====
+test-docker: ## Запустить тесты в Docker
+	@echo "🧪 Запуск тестов в Docker..."
+	$(DOCKER_COMPOSE) exec audio-processor python -m pytest src/tests/ -v
+
+test-docker-basic: ## Запустить базовые тесты в Docker
+	@echo "🧪 Запуск базовых тестов в Docker..."
+	$(DOCKER_COMPOSE) exec audio-processor python -m pytest src/tests/test_basic.py -v
+
+# ===== Очистка =====
+clean: ## Очистить Docker ресурсы
+	@echo "🧹 Очистка Docker ресурсов..."
+	$(DOCKER_COMPOSE) down -v --remove-orphans
+	$(DOCKER_COMPOSE_GPU) down -v --remove-orphans
+	docker system prune -f
+
+clean-images: ## Удалить образы
+	@echo "🧹 Удаление образов..."
+	docker rmi $(IMAGE_NAME):$(TAG) 2>/dev/null || true
+	docker rmi $(IMAGE_NAME)-gpu:$(TAG) 2>/dev/null || true
+
+clean-all: clean clean-images ## Полная очистка
+
+# ===== Мониторинг =====
+status: ## Показать статус сервисов
+	@echo "📊 Статус сервисов:"
+	$(DOCKER_COMPOSE) ps
+
+status-gpu: ## Показать статус GPU сервисов
+	@echo "📊 Статус GPU сервисов:"
+	$(DOCKER_COMPOSE_GPU) ps
+
+health: ## Проверить здоровье сервисов
+	@echo "🏥 Проверка здоровья сервисов:"
+	@curl -s http://localhost:8000/health | jq . || echo "API недоступен"
+	@curl -s http://localhost:5555 | grep -q "Flower" && echo "Flower доступен" || echo "Flower недоступен"
+	@curl -s http://localhost:9090 | grep -q "Prometheus" && echo "Prometheus доступен" || echo "Prometheus недоступен"
+	@curl -s http://localhost:3000 | grep -q "Grafana" && echo "Grafana доступен" || echo "Grafana недоступен"
+
+# ===== Разработка =====
+shell: ## Подключиться к контейнеру API
+	$(DOCKER_COMPOSE) exec audio-processor bash
+
+shell-worker: ## Подключиться к контейнеру Worker
+	$(DOCKER_COMPOSE) exec audio-worker bash
+
+shell-gpu: ## Подключиться к GPU контейнеру
+	$(DOCKER_COMPOSE_GPU) exec audio-processor bash
+
+# ===== Перезапуск =====
+restart: ## Перезапустить CPU версию
+	@echo "🔄 Перезапуск CPU версии..."
+	$(DOCKER_COMPOSE) restart
+
+restart-gpu: ## Перезапустить GPU версию
+	@echo "🔄 Перезапуск GPU версии..."
+	$(DOCKER_COMPOSE_GPU) restart
+
+restart-api: ## Перезапустить только API
+	$(DOCKER_COMPOSE) restart audio-processor
+
+restart-worker: ## Перезапустить только Worker
+	$(DOCKER_COMPOSE) restart audio-worker
+
+# ===== Масштабирование =====
+scale-worker: ## Масштабировать Worker (использование: make scale-worker REPLICAS=3)
+	@echo "📈 Масштабирование Worker до $(REPLICAS) реплик..."
+	$(DOCKER_COMPOSE) up -d --scale audio-worker=$(REPLICAS)
+
+# ===== Бэкап и восстановление =====
+backup: ## Создать бэкап данных
+	@echo "💾 Создание бэкапа..."
+	mkdir -p backups
+	$(DOCKER_COMPOSE) exec redis redis-cli BGSAVE
+	$(DOCKER_COMPOSE) exec minio mc mirror /data backups/minio-$(shell date +%Y%m%d_%H%M%S)
+
+# ===== Информация =====
+info: ## Показать информацию о системе
+	@echo "ℹ️  Информация о системе:"
+	@echo "Docker версия: $$(docker --version)"
+	@echo "Docker Compose версия: $$(docker-compose --version)"
+	@echo "GPU поддержка: $$(docker run --rm --gpus all nvidia/cuda:12.1-base-ubuntu22.04 nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'Недоступна')"
+	@echo "Доступная память: $$(docker system df)"
