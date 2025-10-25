@@ -4,6 +4,9 @@ FastAPI application for AudioProcessor.
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import logging
 import time
 from datetime import datetime
@@ -20,14 +23,16 @@ from .schemas.models import (
 )
 from .celery_app import celery_app
 from .extractors import discover_extractors
-from .monitor.metrics import get_metrics
+from .monitor.metrics import get_metrics, metrics_collector
+from .utils.logging import setup_logging, get_logger, request_logger
+from .health import health_checker
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Setup structured logging
+setup_logging()
+logger = get_logger(__name__)
+
+# Create rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 # Create FastAPI app
 app = FastAPI(
@@ -37,6 +42,10 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+# Add rate limiter to app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Get settings
 settings = get_settings()
@@ -56,7 +65,7 @@ startup_time = time.time()
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Log all requests."""
+    """Log all requests and record metrics."""
     start_time = time.time()
     
     # Process request
@@ -65,11 +74,21 @@ async def log_requests(request: Request, call_next):
     # Calculate processing time
     process_time = time.time() - start_time
     
-    # Log request
-    logger.info(
-        f"{request.method} {request.url.path} - "
-        f"Status: {response.status_code} - "
-        f"Time: {process_time:.3f}s"
+    # Record metrics
+    metrics_collector.record_request(
+        method=request.method,
+        endpoint=request.url.path,
+        status=str(response.status_code),
+        duration=process_time
+    )
+    
+    # Log request with structured logging
+    request_logger.log_request(
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        duration=process_time,
+        correlation_id=request.headers.get("X-Correlation-ID")
     )
     
     return response
@@ -93,26 +112,38 @@ async def health_check():
         # Calculate uptime
         uptime = time.time() - startup_time
         
-        # Check dependencies (placeholder for now)
-        dependencies = {
-            "redis": "healthy",  # TODO: Add actual Redis health check
-            "s3": "healthy",     # TODO: Add actual S3 health check
-        }
+        # Run comprehensive health checks
+        health_results = await health_checker.check_all()
+        
+        # Extract dependency statuses
+        dependencies = {}
+        for check_name, check_result in health_results["checks"].items():
+            dependencies[check_name] = check_result["status"]
+        
+        # Determine overall status
+        overall_status = health_results["status"]
+        
+        # Return appropriate HTTP status
+        if overall_status == "unhealthy":
+            raise HTTPException(status_code=503, detail="Service unhealthy")
         
         return HealthResponse(
-            status="healthy",
+            status=overall_status,
             timestamp=datetime.utcnow().isoformat() + "Z",
             version="1.0.0",
             uptime=uptime,
             dependencies=dependencies
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=503, detail="Service unhealthy")
 
 
 @app.post("/process", response_model=ProcessResponse)
-async def process_audio(request: ProcessRequest):
+@limiter.limit("10/minute")
+async def process_audio(request: Request, process_request: ProcessRequest):
     """
     Process audio file and extract features.
     
@@ -121,7 +152,7 @@ async def process_audio(request: ProcessRequest):
     """
     try:
         # Validate request (allow local files for testing)
-        if not (request.audio_uri.startswith("s3://") or request.audio_uri.endswith(('.wav', '.mp3', '.flac', '.m4a'))):
+        if not (process_request.audio_uri.startswith("s3://") or process_request.audio_uri.endswith(('.wav', '.mp3', '.flac', '.m4a'))):
             raise HTTPException(
                 status_code=400, 
                 detail="Invalid audio_uri. Must be an S3 URI (s3://bucket/path) or local audio file"
@@ -130,15 +161,18 @@ async def process_audio(request: ProcessRequest):
         # Submit task to Celery
         task = celery_app.send_task(
             'src.celery_app.process_audio_task',
-            args=[request.video_id, request.audio_uri],
+            args=[process_request.video_id, process_request.audio_uri],
             kwargs={
-                'task_id': request.task_id,
-                'dataset': request.dataset,
-                'meta': request.meta
+                'task_id': process_request.task_id,
+                'dataset': process_request.dataset,
+                'meta': process_request.meta
             }
         )
         
-        logger.info(f"Submitted processing task {task.id} for video_id: {request.video_id}")
+        # Record task submission metrics
+        metrics_collector.record_task("submitted", "audio_queue")
+        
+        logger.info(f"Submitted processing task {task.id} for video_id: {process_request.video_id}")
         
         return ProcessResponse(
             accepted=True,
@@ -235,6 +269,43 @@ async def list_extractors():
     except Exception as e:
         logger.error(f"Error listing extractors: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """
+    Detailed health check endpoint with full diagnostic information.
+    
+    Returns:
+        Detailed health check results
+    """
+    try:
+        health_results = await health_checker.check_all()
+        return health_results
+    except Exception as e:
+        logger.error(f"Detailed health check failed: {e}")
+        raise HTTPException(status_code=500, detail="Health check failed")
+
+
+@app.get("/health/{check_name}")
+async def specific_health_check(check_name: str):
+    """
+    Run a specific health check.
+    
+    Args:
+        check_name: Name of the health check to run
+        
+    Returns:
+        Specific health check result
+    """
+    try:
+        result = await health_checker.check_specific(check_name)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Specific health check failed: {e}")
+        raise HTTPException(status_code=500, detail="Health check failed")
 
 
 @app.get("/metrics")

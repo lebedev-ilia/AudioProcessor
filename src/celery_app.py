@@ -48,10 +48,10 @@ celery_app.conf.update(
 
 # === Queue Routing ===
 celery_app.conf.task_routes = {
-    "src.celery_app.process_audio_task": {"queue": "celery"},
-    "src.celery_app.process_audio_gpu_task": {"queue": "celery"},
-    "src.celery_app.health_check_task": {"queue": "celery"},
-    "src.celery_app.simple_test_task": {"queue": "celery"},
+    "src.celery_app.process_audio_task": {"queue": "audio_queue"},
+    "src.celery_app.process_audio_gpu_task": {"queue": "gpu_queue"},
+    "src.celery_app.health_check_task": {"queue": "system_queue"},
+    "src.celery_app.simple_test_task": {"queue": "audio_queue"},
 }
 
 # === Beat Schedule ===
@@ -65,7 +65,15 @@ celery_app.conf.beat_schedule = {
 celery_app.conf.timezone = "UTC"
 
 # === Tasks ===
-@celery_app.task(bind=True, name="src.celery_app.process_audio_task")
+@celery_app.task(
+    bind=True, 
+    name="src.celery_app.process_audio_task",
+    autoretry_for=(Exception,),
+    retry_kwargs={'max_retries': 3, 'countdown': 60},
+    retry_backoff=True,
+    retry_backoff_max=600,
+    retry_jitter=True
+)
 def process_audio_task(self, video_id: str, audio_uri: str, **kwargs):
     """
     CPU-based audio feature extraction.
@@ -75,11 +83,25 @@ def process_audio_task(self, video_id: str, audio_uri: str, **kwargs):
     from src.extractors import discover_extractors
     from src.storage.s3_client import S3Client
     from src.schemas.models import ManifestModel, ExtractorResult
+    from src.monitor.metrics import metrics_collector
+    from src.utils.logging import get_logger, task_logger, extractor_logger
 
-    logger = logging.getLogger(__name__)
+    logger = get_logger(__name__)
 
+    start_time = time.time()
+    
     try:
-        logger.info(f"[CPU] Start processing video_id={video_id}")
+        # Log task start
+        task_logger.log_task_start(
+            task_id=self.request.id,
+            task_name="process_audio_task",
+            video_id=video_id,
+            audio_uri=audio_uri,
+            dataset=kwargs.get('dataset', 'default')
+        )
+        
+        # Record task start
+        metrics_collector.record_task("started", "audio_queue")
 
         self.update_state(state="PROGRESS", meta={"progress": 0, "status": "Initializing..."})
 
@@ -126,13 +148,54 @@ def process_audio_task(self, video_id: str, audio_uri: str, **kwargs):
                 )
                 
                 try:
-                    logger.info(f"Running extractor: {extractor.name}")
+                    # Log extractor start
+                    extractor_logger.log_extractor_start(
+                        extractor_name=extractor.name,
+                        video_id=video_id
+                    )
+                    
+                    extractor_start = time.time()
                     result = extractor.run(local_audio_path, tmp_dir)
+                    extractor_duration = time.time() - extractor_start
+                    
+                    # Log extractor completion
+                    extractor_logger.log_extractor_complete(
+                        extractor_name=extractor.name,
+                        video_id=video_id,
+                        duration=extractor_duration,
+                        success=result.success
+                    )
+                    
+                    # Record extractor metrics
+                    metrics_collector.record_extractor(
+                        name=extractor.name,
+                        version=extractor.version,
+                        success=result.success,
+                        duration=extractor_duration,
+                        error_type=str(e).split(':')[0] if not result.success else None
+                    )
+                    
                     results.append(result)
-                    logger.info(f"Completed {extractor.name}: {result.success}")
                     
                 except Exception as e:
-                    logger.error(f"Extractor {extractor.name} failed: {e}")
+                    extractor_duration = time.time() - extractor_start
+                    
+                    # Log extractor error
+                    extractor_logger.log_extractor_error(
+                        extractor_name=extractor.name,
+                        video_id=video_id,
+                        error=str(e)
+                    )
+                    
+                    # Record failed extractor metrics
+                    metrics_collector.record_extractor(
+                        name=extractor.name,
+                        version=extractor.version,
+                        success=False,
+                        duration=extractor_duration,
+                        error_type=type(e).__name__
+                    )
+                    
                     # Create error result
                     error_result = ExtractorResult(
                         name=extractor.name,
@@ -172,6 +235,10 @@ def process_audio_task(self, video_id: str, audio_uri: str, **kwargs):
                 manifest_uri = f"file://{os.path.abspath(local_manifest_path)}"
                 logger.info(f"Manifest saved locally: {manifest_uri}")
 
+        # Record successful task completion
+        total_duration = time.time() - start_time
+        metrics_collector.record_task("completed", "audio_queue", total_duration)
+        
         # Final result
         result = {
             "status": "completed",
@@ -181,19 +248,59 @@ def process_audio_task(self, video_id: str, audio_uri: str, **kwargs):
             "extractors": [r.name for r in results],
             "successful_extractors": [r.name for r in results if r.success],
             "failed_extractors": [r.name for r in results if not r.success],
+            "total_processing_time": total_duration,
             "timestamp": datetime.utcnow().isoformat(),
         }
 
-        logger.info(f"[CPU] Completed video_id={video_id}")
+        # Notify MasterML of completion
+        try:
+            notify_masterml(video_id, manifest_uri, "completed", result)
+        except Exception as e:
+            logger.warning(f"Failed to notify MasterML: {e}")
+        
+        # Log task completion
+        task_logger.log_task_complete(
+            task_id=self.request.id,
+            video_id=video_id,
+            duration=total_duration,
+            successful_extractors=len([r for r in results if r.success]),
+            failed_extractors=len([r for r in results if not r.success])
+        )
+        
         return result
 
     except Exception as e:
-        logger.exception(f"[CPU] Error processing video_id={video_id}: {e}")
+        total_duration = time.time() - start_time
+        
+        # Log task error
+        task_logger.log_task_error(
+            task_id=self.request.id,
+            video_id=video_id,
+            error=str(e)
+        )
+        
+        # Record failed task
+        metrics_collector.record_task("failed", "audio_queue", total_duration)
+        
+        # Notify MasterML of failure
+        try:
+            notify_masterml(video_id, None, "failed", {"error": str(e)})
+        except Exception as notify_e:
+            logger.warning(f"Failed to notify MasterML of failure: {notify_e}")
+        
         self.update_state(state="FAILURE", meta={"error": str(e), "status": "failed"})
         raise
 
 
-@celery_app.task(bind=True, name="src.celery_app.process_audio_gpu_task")
+@celery_app.task(
+    bind=True, 
+    name="src.celery_app.process_audio_gpu_task",
+    autoretry_for=(Exception,),
+    retry_kwargs={'max_retries': 2, 'countdown': 120},
+    retry_backoff=True,
+    retry_backoff_max=1200,
+    retry_jitter=True
+)
 def process_audio_gpu_task(self, video_id: str, audio_uri: str, **kwargs):
     """
     GPU-accelerated audio feature extraction.
@@ -290,6 +397,52 @@ def simple_test_task(message):
     
     time.sleep(2)
     return f"Processed: {message}"
+
+
+def notify_masterml(video_id: str, manifest_uri: str, status: str, result: dict = None):
+    """
+    Notify MasterML about task completion.
+    
+    Args:
+        video_id: Video identifier
+        manifest_uri: URI to manifest file (if successful)
+        status: Task status (completed, failed)
+        result: Task result data
+    """
+    import httpx
+    from datetime import datetime
+    from src.utils.logging import get_logger
+    
+    logger = get_logger(__name__)
+    
+    try:
+        # Prepare notification payload
+        payload = {
+            "video_id": video_id,
+            "processor": "audio_processor",
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat(),
+            "manifest_uri": manifest_uri,
+            "result": result
+        }
+        
+        # Send notification to MasterML
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{settings.masterml_url}/api/v1/processors/audio/notify",
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {settings.masterml_token}" if settings.masterml_token else None
+                }
+            )
+            response.raise_for_status()
+            
+        logger.info(f"Successfully notified MasterML for video_id={video_id}, status={status}")
+        
+    except Exception as e:
+        logger.error(f"Failed to notify MasterML for video_id={video_id}: {e}")
+        # Don't raise exception to avoid breaking the main task
 
 
 if __name__ == "__main__":

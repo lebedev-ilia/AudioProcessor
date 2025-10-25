@@ -7,7 +7,7 @@ import logging
 from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 from botocore.exceptions import ClientError, NoCredentialsError
-from config import get_settings
+from ..config import get_settings
 
 logger = logging.getLogger(__name__)
 
