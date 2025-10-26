@@ -2,7 +2,41 @@
 
 **Микросервис для извлечения аудио признаков из аудио и видео файлов**
 
-Построен на FastAPI + Celery архитектуре с модульной системой extractors. Поддерживает обработку как аудио файлов, так и извлечение аудио из видео с последующим полным анализом. Полностью протестирован и готов к продакшену!
+Построен на FastAPI + Celery архитектуре с модульной системой extractors. Поддерживает обработку как аудио файлов, так и извлечение аудио из видео с последующим полным анализом. **Теперь с поддержкой Unified API для гибкой обработки агрегированных и per-segment фич!** Полностью протестирован и готов к продакшену!
+
+## 🚀 Unified API - Новые возможности!
+
+**Unified AudioProcessor** теперь поддерживает гибкую обработку аудио с тремя режимами:
+
+### 📊 Режимы обработки:
+- **`aggregates_only`** - Только агрегированные фичи (все 22 экстрактора для всего аудио)
+- **`segments_only`** - Только per-segment последовательности (ограниченный набор экстракторов для сегментов)
+- **`both`** - И агрегированные, и per-segment фичи в одном запросе
+
+### 🎯 Ключевые особенности:
+- **Умный выбор экстракторов**: все 22 для агрегатов, ограниченные для сегментов
+- **Оптимизированный Segment Pipeline**: PCA сжатие, нормализация, выбор важных сегментов
+- **Batch обработка**: масштабируемая обработка множества файлов
+- **Гибкая конфигурация**: настройка параметров сегментации
+
+### 📁 Структура результатов:
+```
+test_output/
+├── aggregates_only/     # Только manifest.json с агрегированными фичами
+├── segments_only/       # manifest.json + features.npy + meta.json + mask.npy
+└── both/               # manifest.json + features.npy + meta.json + mask.npy
+```
+
+### 🔧 Быстрый старт:
+```bash
+# Тестирование Unified API
+python test_unified_processor.py
+
+# Демонстрация API
+python demo_unified_api.py
+```
+
+Подробная документация: **[UNIFIED_API_README.md](UNIFIED_API_README.md)**
 
 ## 📊 Анализ результатов
 
@@ -139,6 +173,12 @@ python quick_test.py
 # Полный тест с детальными результатами
 python test_with_full_results.py
 
+# 🚀 НОВОЕ: Тестирование Unified API
+python test_unified_processor.py
+
+# Демонстрация Unified API
+python demo_unified_api.py
+
 # Просмотр результатов
 python view_results.py summary
 python view_results.py show emotion_recognition
@@ -168,6 +208,10 @@ docker-compose up --build
 # Тестирование в контейнере
 docker-compose exec audio-processor python quick_test.py
 docker-compose exec audio-processor python test_with_full_results.py
+
+# 🚀 НОВОЕ: Тестирование Unified API в контейнере
+docker-compose exec audio-processor python test_unified_processor.py
+docker-compose exec audio-processor python demo_unified_api.py
 ```
 
 **GPU версия:**
@@ -178,6 +222,10 @@ docker-compose -f docker-compose.gpu.yml up --build
 # Тестирование в GPU контейнере
 docker-compose -f docker-compose.gpu.yml exec audio-processor python quick_test.py
 docker-compose -f docker-compose.gpu.yml exec audio-processor python test_with_full_results.py
+
+# 🚀 НОВОЕ: Тестирование Unified API в GPU контейнере
+docker-compose -f docker-compose.gpu.yml exec audio-processor python test_unified_processor.py
+docker-compose -f docker-compose.gpu.yml exec audio-processor python demo_unified_api.py
 ```
 
 ### 📊 Результаты тестирования
@@ -234,6 +282,14 @@ python view_results.py all
 - **Rhythmic Analysis** (27 фич) - ритмический анализ
 - **Advanced Embeddings** (24 фичи) - продвинутые эмбеддинги
 
+**🚀 Unified API тестирование:**
+- **aggregates_only** - тестирование извлечения только агрегированных фич
+- **segments_only** - тестирование per-segment последовательностей
+- **both** - тестирование комбинированного режима
+- **batch processing** - тестирование batch обработки
+- **segment pipeline** - тестирование PCA сжатия, нормализации, выбора сегментов
+- **data loading** - тестирование загрузки и валидации результатов
+
 ### Запуск тестов
 ```bash
 # Все тесты
@@ -262,6 +318,10 @@ pytest src/tests/test_integration.py -v
 
 # Производительность
 pytest src/tests/test_performance.py -v
+
+# 🚀 НОВОЕ: Unified API тесты
+python test_unified_processor.py
+python demo_unified_api.py
 ```
 
 ## 🐳 Docker Развертывание
@@ -525,6 +585,7 @@ docker-compose up -d
 
 ### API Endpoints
 
+#### 🔧 Классические endpoints:
 - `POST /process` - обработка аудио или видео файла (rate limited: 10 req/min)
 - `GET /task/{task_id}` - статус задачи
 - `GET /extractors` - список доступных экстракторов
@@ -533,6 +594,13 @@ docker-compose up -d
 - `GET /health/{check_name}` - проверка конкретного компонента
 - `GET /metrics` - Prometheus метрики
 - `GET /docs` - Swagger UI документация
+
+#### 🚀 Unified API endpoints (новые):
+- `POST /unified/process` - гибкая обработка с выбором режима (aggregates_only/segments_only/both)
+- `POST /unified/batch` - batch обработка множества файлов
+- `GET /unified/task/{task_id}` - статус unified задачи
+- `GET /unified/config` - текущая конфигурация сегментации
+- `GET /unified/examples` - примеры использования API
 
 ### 🎬 Обработка видео
 
@@ -559,8 +627,9 @@ curl -X POST "http://localhost:8000/process" \
 4. 📊 Сохранение метаданных видео (разрешение, кодек, длительность)
 5. 📄 Создание манифеста с результатами
 
-### Пример запроса
+### Примеры запросов
 
+#### 🔧 Классический API:
 ```bash
 # Обработка аудио файла
 curl -X POST http://localhost:8000/process \
@@ -580,6 +649,70 @@ curl http://localhost:8000/task/task_456
 
 # Список экстракторов
 curl http://localhost:8000/extractors
+```
+
+#### 🚀 Unified API:
+```bash
+# Только агрегированные фичи
+curl -X POST http://localhost:8000/unified/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_id": "test_001",
+    "input_uri": "test_audio.wav",
+    "aggregates_only": true
+  }'
+
+# Только per-segment последовательности
+curl -X POST http://localhost:8000/unified/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_id": "test_002",
+    "input_uri": "test_audio.wav",
+    "aggregates_only": false,
+    "segment_config": {
+      "segment_len": 3.0,
+      "hop": 1.5,
+      "max_seq_len": 16
+    }
+  }'
+
+# И то, и другое
+curl -X POST http://localhost:8000/unified/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_id": "test_003",
+    "input_uri": "test_audio.wav",
+    "aggregates_only": false,
+    "segment_config": {
+      "segment_len": 3.0,
+      "hop": 1.5,
+      "max_seq_len": 32,
+      "k_start": 8,
+      "k_end": 8
+    }
+  }'
+
+# Batch обработка
+curl -X POST http://localhost:8000/unified/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_data": [
+      {"video_id": "batch_001", "input_uri": "audio1.wav"},
+      {"video_id": "batch_002", "input_uri": "audio2.wav"}
+    ],
+    "aggregates_only": false,
+    "segment_config": {
+      "segment_len": 3.0,
+      "hop": 1.5,
+      "max_seq_len": 16
+    }
+  }'
+
+# Получение конфигурации
+curl http://localhost:8000/unified/config
+
+# Примеры использования
+curl http://localhost:8000/unified/examples
 ```
 
 ## 🔧 Разработка
@@ -631,7 +764,9 @@ mypy src/
 ### 🎉 Полностью функциональные компоненты:
 - ✅ **FastAPI сервер** - REST API с полной документацией
 - ✅ **Celery Worker** - асинхронная обработка задач с retry логикой
-- ✅ **6 Audio Extractors** - все экстракторы работают корректно
+- ✅ **22 Audio Extractors** - все экстракторы работают корректно
+- ✅ **🚀 Unified API** - гибкая обработка агрегированных и per-segment фич
+- ✅ **Segment Pipeline** - PCA сжатие, нормализация, выбор важных сегментов
 - ✅ **Redis интеграция** - очереди и результаты
 - ✅ **S3 клиент** - с fallback на локальное сохранение
 - ✅ **Мониторинг задач** - отслеживание прогресса в реальном времени
@@ -644,7 +779,7 @@ mypy src/
 
 ### 🧪 Протестировано:
 - ✅ Обработка аудио через API
-- ✅ Все экстракторы (MFCC, Mel, Chroma, Loudness, VAD, CLAP)
+- ✅ Все 22 экстракторы (MFCC, Mel, Chroma, Loudness, VAD, CLAP, ASR, и др.)
 - ✅ Создание манифестов
 - ✅ Мониторинг задач
 - ✅ Health checks (Redis, S3, MasterML, Celery, System)
@@ -653,13 +788,20 @@ mypy src/
 - ✅ Rate limiting
 - ✅ Retry логика Celery
 - ✅ Progress tracking
+- ✅ **🚀 Unified API** - все режимы (aggregates_only, segments_only, both)
+- ✅ **Segment Pipeline** - PCA сжатие, нормализация, выбор сегментов
+- ✅ **Batch processing** - обработка множества файлов
+- ✅ **Data loading** - загрузка и валидация результатов
 
 ## 📊 Мониторинг
 
 - **API документация**: `http://localhost:8000/docs`
+- **🚀 Unified API документация**: `http://localhost:8000/docs#/unified`
 - **Prometheus метрики**: `http://localhost:8000/metrics`
 - **Flower (Celery)**: `http://localhost:5555`
 - **Grafana**: `http://localhost:3000` (admin/admin)
+- **Unified API примеры**: `http://localhost:8000/unified/examples`
+- **Unified API конфигурация**: `http://localhost:8000/unified/config`
 
 ## 🐳 Развертывание
 
@@ -718,3 +860,59 @@ MIT License
 - Создать Issue в GitHub
 - Проверить [troubleshooting guide](docs/troubleshooting.md)
 - Обратиться к команде разработки
+
+
+
+curl -X POST http://localhost:8000/unified/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "videos": [
+      {
+        "video_id": "video_batch_001",
+        "video_uri": "./-69HDT6DZEM.mp4"
+      },
+      {
+        "video_id": "video_batch_002", 
+        "video_uri": "./test_video_2.mp4"
+      }
+    ],
+    "processing_mode": "both",
+    "segment_config": {
+      "segment_len": 3.0,
+      "hop": 1.5,
+      "max_seq_len": 16,
+      "k_start": 4,
+      "k_end": 4
+    },
+    "output_dir": "video_batch_output"
+  }'
+
+
+  [2025-10-26 20:05:15,233: WARNING/ForkPoolWorker-2] Levinson-Durbin algorithm failed: could not broadcast input array from shape (0,) into shape (1,)
+  [2025-10-26 20:05:16,879: INFO/ForkPoolWorker-2] Advanced spectral extraction completed successfully in 51.408s
+
+  35/90 ━━━━━━━━━━━━━━━━━━━━ 15s 277ms/steplWorker-1] 
+[2025-10-26 20:05:41,589: WARNING/ForkPoolWorker-2] /Users/user/Desktop/MLService/DataProcessor/AudioProcessor/src/extractors/advanced_embeddings_extractor.py:405: UserWarning: Module 'speechbrain.pretrained' was deprecated, redirecting to 'speechbrain.inference'. Please update your script. This is a change from SpeechBrain 1.0. See: https://github.com/speechbrain/speechbrain/releases/tag/v1.0.0
+  from speechbrain.pretrained import EncoderClassifier
+
+36/90 ━━━━━━━━━━━━━━━━━━━━ 14s 277ms/steplWorker-1] 
+[2025-10-26 20:05:41,668: INFO/ForkPoolWorker-2] Fetch hyperparams.yaml: Using symlink found at '/Users/user/Desktop/MLService/DataProcessor/AudioProcessor/pretrained_models/spkrec-ecapa-voxceleb/hyperparams.yaml'
+
+[2025-10-26 20:05:22,200: INFO/ForkPoolWorker-2] Source separation extraction completed successfully in 55.869s
+[2025-10-26 20:05:22,202: INFO/ForkPoolWorker-2] {"event": "\u2705 source_separation completed successfully in 64.63s", "logger": "src.async_unified_processor", "level": "info", "timestamp": "2025-10-26T10:05:22.202272Z"}
+[2025-10-26 20:05:27,793: WARNING/ForkPoolWorker-1] Pitch extraction failed: boolean index did not match indexed array along dimension 0; dimension is 329 but corresponding boolean dimension is 1235
+[2025-10-26 20:05:27,850: INFO/ForkPoolWorker-1] Voice quality extraction completed successfully in 61.999s
+
+k_extracted_audio.wav
+[2025-10-26 20:04:56,580: INFO/ForkPoolWorker-2] {"event": "\u2705 loudness_extractor completed successfully in 39.26s", "logger": "src.async_unified_processor", "level": "info", "timestamp": "2025-10-26T10:04:56.580544Z"}
+[2025-10-26 20:04:56,638: WARNING/ForkPoolWorker-2] Pitch extraction failed: boolean index did not match indexed array along dimension 0; dimension is 393 but corresponding boolean dimension is 643
+[2025-10-26 20:04:56,705: INFO/ForkPoolWorker-2] Voice quality extraction completed successfully in 32.232s
+
+[2025-10-26 20:04:28,831: INFO/ForkPoolWorker-1] {"event": "\u2705 spectral completed successfully in 11.31s", "logger": "src.async_unified_processor", "level": "info", "timestamp": "2025-10-26T10:04:28.831262Z"}
+[2025-10-26 20:04:29,981: WARNING/ForkPoolWorker-1] /Users/user/Desktop/MLService/DataProcessor/AudioProcessor/.venv/lib/python3.12/site-packages/numpy/lib/function_base.py:2897: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+
+[2025-10-26 20:04:29,982: WARNING/ForkPoolWorker-1] /Users/user/Desktop/MLService/DataProcessor/AudioProcessor/.venv/lib/python3.12/site-packages/numpy/lib/function_base.py:2898: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+
+[2025-10-26 20:04:33,200: INFO/ForkPoolWorker-1] Successfully completed clap_extractor extr

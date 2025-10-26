@@ -12,7 +12,7 @@ celery_app = Celery(
     "audio_processor",
     broker=str(settings.celery_broker_url),
     backend=str(settings.celery_result_backend),
-    include=["src.celery_app"],
+    include=["src.celery_app", "src.async_unified_celery_tasks"],
 )
 
 # === Base Configuration ===
@@ -52,6 +52,11 @@ celery_app.conf.task_routes = {
     "src.celery_app.process_audio_gpu_task": {"queue": "gpu_queue"},
     "src.celery_app.health_check_task": {"queue": "system_queue"},
     "src.celery_app.simple_test_task": {"queue": "audio_queue"},
+    # Async unified tasks
+    "src.async_unified_celery_tasks.async_unified_process_task": {"queue": "async_audio_queue"},
+    "src.async_unified_celery_tasks.async_unified_batch_task": {"queue": "async_batch_queue"},
+    "src.async_unified_celery_tasks.async_unified_process_video_task": {"queue": "async_gpu_queue"},
+    "src.async_unified_celery_tasks.async_unified_process_audio_task": {"queue": "async_audio_queue"},
 }
 
 # === Beat Schedule ===

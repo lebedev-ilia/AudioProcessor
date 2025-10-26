@@ -34,7 +34,11 @@ class ASRExtractor(BaseExtractor):
         if self._model is None:
             try:
                 import whisper
-                self._model = whisper.load_model(self.model_name, device=self.device)
+                # Suppress verbose loading output
+                import sys
+                from contextlib import redirect_stdout
+                with redirect_stdout(open('/dev/null', 'w')):
+                    self._model = whisper.load_model(self.model_name, device=self.device)
                 self.logger.info(f"Loaded Whisper model: {self.model_name} on {self.device}")
             except ImportError:
                 raise ImportError("Whisper not installed. Install with: pip install openai-whisper")

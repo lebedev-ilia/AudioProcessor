@@ -61,7 +61,13 @@ class CLAPExtractor(BaseExtractor):
             if CLAP_AVAILABLE:
                 # Initialize CLAP model
                 self.model = laion_clap.CLAP_Module(enable_fusion=False)
-                self.model.load_ckpt()  # Load pretrained weights
+                
+                # Suppress verbose loading output
+                import sys
+                from contextlib import redirect_stdout
+                with redirect_stdout(open('/dev/null', 'w')):
+                    self.model.load_ckpt()  # Load pretrained weights
+                
                 self.model.eval()
                 self.model.to(self.device)
                 self.logger.info("CLAP model loaded successfully")

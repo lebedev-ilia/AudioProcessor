@@ -79,6 +79,22 @@ test-docker-basic: ## Запустить базовые тесты в Docker
 	@echo "🧪 Запуск базовых тестов в Docker..."
 	$(DOCKER_COMPOSE) exec audio-processor python -m pytest src/tests/test_basic.py -v
 
+test-unified: ## Запустить тесты Unified API в Docker
+	@echo "🚀 Запуск тестов Unified API в Docker..."
+	$(DOCKER_COMPOSE) exec audio-processor python test_unified_processor.py
+
+demo-unified: ## Запустить демо Unified API в Docker
+	@echo "🚀 Запуск демо Unified API в Docker..."
+	$(DOCKER_COMPOSE) exec audio-processor python demo_unified_api.py
+
+test-gpu-unified: ## Запустить тесты Unified API в GPU Docker
+	@echo "🚀 Запуск тестов Unified API в GPU Docker..."
+	$(DOCKER_COMPOSE_GPU) exec audio-processor python test_unified_processor.py
+
+demo-gpu-unified: ## Запустить демо Unified API в GPU Docker
+	@echo "🚀 Запуск демо Unified API в GPU Docker..."
+	$(DOCKER_COMPOSE_GPU) exec audio-processor python demo_unified_api.py
+
 # ===== Очистка =====
 clean: ## Очистить Docker ресурсы
 	@echo "🧹 Очистка Docker ресурсов..."
@@ -105,6 +121,7 @@ status-gpu: ## Показать статус GPU сервисов
 health: ## Проверить здоровье сервисов
 	@echo "🏥 Проверка здоровья сервисов:"
 	@curl -s http://localhost:8000/health | jq . || echo "API недоступен"
+	@curl -s http://localhost:8000/unified/config | jq . && echo "🚀 Unified API доступен" || echo "🚀 Unified API недоступен"
 	@curl -s http://localhost:5555 | grep -q "Flower" && echo "Flower доступен" || echo "Flower недоступен"
 	@curl -s http://localhost:9090 | grep -q "Prometheus" && echo "Prometheus доступен" || echo "Prometheus недоступен"
 	@curl -s http://localhost:3000 | grep -q "Grafana" && echo "Grafana доступен" || echo "Grafana недоступен"

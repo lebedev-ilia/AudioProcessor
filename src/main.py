@@ -26,6 +26,8 @@ from .extractors import discover_extractors
 from .monitor.metrics import get_metrics, metrics_collector
 from .utils.logging import setup_logging, get_logger, request_logger
 from .health import health_checker
+from .unified_api import router as unified_router
+from .async_unified_api import router as async_unified_router
 
 # Setup structured logging
 setup_logging()
@@ -58,6 +60,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include unified API router
+app.include_router(unified_router)
+
+# Include async unified API router
+app.include_router(async_unified_router)
 
 # Store startup time for uptime calculation
 startup_time = time.time()

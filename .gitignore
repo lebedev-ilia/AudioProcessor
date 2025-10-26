@@ -152,6 +152,7 @@ dmypy.json
 *.onnx
 *.tflite
 *.pb
+*.npy
 
 # Temporary files
 tmp/
