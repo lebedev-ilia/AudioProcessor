@@ -1,0 +1,57 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ml-service
+
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - configmap.yaml
+  - secret.yaml
+  - services.yaml
+  - audio-processor-deployment.yaml
+  - audio-worker-deployment.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - monitoring.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: ml-service
+  app.kubernetes.io/managed-by: kustomize
+
+patchesStrategicMerge:
+  - |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: audio-processor
+    spec:
+      template:
+        metadata:
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8000"
+            prometheus.io/path: "/metrics"
+
+configMapGenerator:
+  - name: ml-service-config
+    literals:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    options:
+      disableNameSuffixHash: true
+
+secretGenerator:
+  - name: ml-service-secrets
+    literals:
+      - JWT_SECRET_KEY=your-jwt-secret-key-here
+      - DATABASE_PASSWORD=your-database-password-here
+    options:
+      disableNameSuffixHash: true
+
+images:
+  - name: audio-processor
+    newTag: latest
+  - name: audio-processor
+    newName: your-registry/audio-processor
+    newTag: v1.0.0

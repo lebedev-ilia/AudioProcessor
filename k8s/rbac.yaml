@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ml-service-sa
+  namespace: ml-service
+  labels:
+    app.kubernetes.io/name: ml-service-sa
+    app.kubernetes.io/part-of: ml-service
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: ml-service
+  name: ml-service-role
+  labels:
+    app.kubernetes.io/name: ml-service-role
+    app.kubernetes.io/part-of: ml-service
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses", "networkpolicies"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ml-service-rolebinding
+  namespace: ml-service
+  labels:
+    app.kubernetes.io/name: ml-service-rolebinding
+    app.kubernetes.io/part-of: ml-service
+subjects:
+- kind: ServiceAccount
+  name: ml-service-sa
+  namespace: ml-service
+roleRef:
+  kind: Role
+  name: ml-service-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRole для мониторинга
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ml-service-monitoring
+  labels:
+    app.kubernetes.io/name: ml-service-monitoring
+    app.kubernetes.io/part-of: ml-service
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "nodes/metrics", "services", "endpoints", "pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ml-service-monitoring
+  labels:
+    app.kubernetes.io/name: ml-service-monitoring
+    app.kubernetes.io/part-of: ml-service
+subjects:
+- kind: ServiceAccount
+  name: ml-service-sa
+  namespace: ml-service
+roleRef:
+  kind: ClusterRole
+  name: ml-service-monitoring
+  apiGroup: rbac.authorization.k8s.io

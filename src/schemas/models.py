@@ -1,7 +1,7 @@
 """
 Pydantic models for AudioProcessor.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from enum import Enum
@@ -19,10 +19,26 @@ class TaskStatus(str, Enum):
 class ProcessRequest(BaseModel):
     """Request model for audio processing."""
     video_id: str = Field(..., description="Unique video identifier")
-    audio_uri: str = Field(..., description="S3 URI to audio file")
+    audio_uri: Optional[str] = Field(None, description="S3 URI to audio file")
+    video_uri: Optional[str] = Field(None, description="S3 URI to video file (alternative to audio_uri)")
     task_id: Optional[str] = Field(None, description="Optional task identifier")
     dataset: str = Field(default="default", description="Dataset name")
     meta: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    
+    @validator('audio_uri', 'video_uri')
+    def validate_uri_fields(cls, v, values):
+        """Validate that either audio_uri or video_uri is provided, but not both."""
+        audio_uri = values.get('audio_uri')
+        video_uri = values.get('video_uri')
+        
+        # If this is the second field being validated, check both
+        if 'video_uri' in values:
+            if not audio_uri and not video_uri:
+                raise ValueError('Either audio_uri or video_uri must be provided')
+            if audio_uri and video_uri:
+                raise ValueError('Cannot provide both audio_uri and video_uri')
+        
+        return v
     
     class Config:
         json_schema_extra = {

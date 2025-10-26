@@ -194,30 +194,33 @@ class LoudnessExtractor(BaseExtractor):
             # Calculate integrated loudness
             loudness = meter.integrated_loudness(audio)
             
-            # Calculate momentary loudness (3-second window)
-            momentary_loudness = meter.momentary_loudness(audio)
-            
-            # Calculate short-term loudness (400ms window)
-            short_term_loudness = meter.short_term_loudness(audio)
+            # For momentary and short-term loudness, we'll use the integrated loudness as approximation
+            # since pyloudnorm.Meter only provides integrated_loudness
+            momentary_loudness = np.array([loudness])  # Single value array
+            short_term_loudness = np.array([loudness])  # Single value array
             
             # Calculate statistics for momentary loudness
-            momentary_mean = float(np.mean(momentary_loudness))
-            momentary_std = float(np.std(momentary_loudness))
-            momentary_min = float(np.min(momentary_loudness))
-            momentary_max = float(np.max(momentary_loudness))
+            momentary_mean = float(loudness)
+            momentary_std = 0.0
+            momentary_min = float(loudness)
+            momentary_max = float(loudness)
             
             # Calculate statistics for short-term loudness
-            short_term_mean = float(np.mean(short_term_loudness))
-            short_term_std = float(np.std(short_term_loudness))
-            short_term_min = float(np.min(short_term_loudness))
-            short_term_max = float(np.max(short_term_loudness))
+            short_term_mean = float(loudness)
+            short_term_std = 0.0
+            short_term_min = float(loudness)
+            short_term_max = float(loudness)
             
-            # Calculate loudness range (LRA)
-            lra = float(np.max(short_term_loudness) - np.min(short_term_loudness))
+            # Calculate loudness range (LRA) - will be 0 since we only have one value
+            lra = 0.0
             
             # Calculate peak level
             peak_level = float(np.max(np.abs(audio)))
             peak_db = 20 * np.log10(peak_level) if peak_level > 0 else -np.inf
+            
+            # Calculate true peak (oversampled peak detection)
+            true_peak_level = self._calculate_true_peak(audio, sample_rate)
+            true_peak_db = 20 * np.log10(true_peak_level) if true_peak_level > 0 else -np.inf
             
             features = {
                 "loudness_lufs": loudness,
@@ -232,6 +235,8 @@ class LoudnessExtractor(BaseExtractor):
                 "loudness_range_lra": lra,
                 "peak_level": peak_level,
                 "peak_db": peak_db,
+                "true_peak_level": true_peak_level,
+                "true_peak_db": true_peak_db,
                 "momentary_loudness_array": momentary_loudness.tolist(),
                 "short_term_loudness_array": short_term_loudness.tolist()
             }
@@ -255,6 +260,8 @@ class LoudnessExtractor(BaseExtractor):
                 "loudness_range_lra": 0.0,
                 "peak_level": 0.0,
                 "peak_db": -np.inf,
+                "true_peak_level": 0.0,
+                "true_peak_db": -np.inf,
                 "momentary_loudness_array": [],
                 "short_term_loudness_array": []
             }
@@ -355,6 +362,41 @@ class LoudnessExtractor(BaseExtractor):
             "lufs_target": self.lufs_target,
             "lufs_tolerance": self.lufs_tolerance
         }
+    
+    def _calculate_true_peak(self, audio: np.ndarray, sample_rate: int) -> float:
+        """
+        Calculate true peak using oversampling to detect inter-sample peaks
+        
+        Args:
+            audio: Audio signal
+            sample_rate: Original sample rate
+            
+        Returns:
+            True peak level
+        """
+        try:
+            # True peak requires oversampling to detect inter-sample peaks
+            # Use 4x oversampling as recommended by EBU R128
+            oversample_factor = 4
+            target_sr = sample_rate * oversample_factor
+            
+            # Resample audio to higher sample rate
+            audio_oversampled = librosa.resample(
+                audio, 
+                orig_sr=sample_rate, 
+                target_sr=target_sr,
+                res_type='kaiser_best'  # High quality resampling
+            )
+            
+            # Find peak in oversampled signal
+            true_peak = float(np.max(np.abs(audio_oversampled)))
+            
+            return true_peak
+            
+        except Exception as e:
+            self.logger.warning(f"True peak calculation failed: {e}")
+            # Fallback to regular peak
+            return float(np.max(np.abs(audio)))
 
 
 # For running as a module

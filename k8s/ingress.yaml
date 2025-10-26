@@ -1,0 +1,152 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ml-service-ingress
+  namespace: ml-service
+  labels:
+    app.kubernetes.io/name: ml-service-ingress
+    app.kubernetes.io/part-of: ml-service
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - ml-service.example.com
+    secretName: ml-service-tls
+  rules:
+  - host: ml-service.example.com
+    http:
+      paths:
+      # MasterML API
+      - path: /masterml
+        pathType: Prefix
+        backend:
+          service:
+            name: masterml-service
+            port:
+              number: 8000
+      # AudioProcessor API
+      - path: /audio
+        pathType: Prefix
+        backend:
+          service:
+            name: audio-processor-service
+            port:
+              number: 8000
+      # Flower (Celery monitoring)
+      - path: /flower
+        pathType: Prefix
+        backend:
+          service:
+            name: flower-service
+            port:
+              number: 5555
+      # MinIO Console
+      - path: /minio
+        pathType: Prefix
+        backend:
+          service:
+            name: minio-service
+            port:
+              number: 9001
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: monitoring-ingress
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring-ingress
+    app.kubernetes.io/part-of: ml-service
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: monitoring-auth
+    nginx.ingress.kubernetes.io/auth-realm: 'Monitoring Access'
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - monitoring.example.com
+    secretName: monitoring-tls
+  rules:
+  - host: monitoring.example.com
+    http:
+      paths:
+      # Prometheus
+      - path: /prometheus
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus-service
+            port:
+              number: 9090
+      # Grafana
+      - path: /grafana
+        pathType: Prefix
+        backend:
+          service:
+            name: grafana-service
+            port:
+              number: 3000
+      # AlertManager
+      - path: /alertmanager
+        pathType: Prefix
+        backend:
+          service:
+            name: alertmanager-service
+            port:
+              number: 9093
+---
+# Basic Auth Secret for monitoring
+apiVersion: v1
+kind: Secret
+metadata:
+  name: monitoring-auth
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring-auth
+    app.kubernetes.io/part-of: ml-service
+type: Opaque
+data:
+  # admin:admin (base64 encoded)
+  auth: YWRtaW46JGFwcjEkSDl2bW5kUjQkLk1qQzFjVzF6Lk1qQzFjVzF6
+---
+# TLS Certificate Secret (will be managed by cert-manager)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ml-service-tls
+  namespace: ml-service
+  labels:
+    app.kubernetes.io/name: ml-service-tls
+    app.kubernetes.io/part-of: ml-service
+type: kubernetes.io/tls
+data:
+  # These will be populated by cert-manager
+  tls.crt: ""
+  tls.key: ""
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: monitoring-tls
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring-tls
+    app.kubernetes.io/part-of: ml-service
+type: kubernetes.io/tls
+data:
+  # These will be populated by cert-manager
+  tls.crt: ""
+  tls.key: ""

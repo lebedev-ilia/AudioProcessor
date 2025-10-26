@@ -145,29 +145,60 @@ async def health_check():
 @limiter.limit("10/minute")
 async def process_audio(request: Request, process_request: ProcessRequest):
     """
-    Process audio file and extract features.
+    Process audio or video file and extract features.
     
-    This endpoint accepts a request to process an audio file and returns
+    This endpoint accepts a request to process an audio or video file and returns
     a task ID for tracking the processing status.
     """
     try:
-        # Validate request (allow local files for testing)
-        if not (process_request.audio_uri.startswith("s3://") or process_request.audio_uri.endswith(('.wav', '.mp3', '.flac', '.m4a'))):
-            raise HTTPException(
-                status_code=400, 
-                detail="Invalid audio_uri. Must be an S3 URI (s3://bucket/path) or local audio file"
+        # Determine if we're processing audio or video
+        if process_request.audio_uri:
+            # Audio processing
+            if not (process_request.audio_uri.startswith("s3://") or process_request.audio_uri.endswith(('.wav', '.mp3', '.flac', '.m4a'))):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid audio_uri. Must be an S3 URI (s3://bucket/path) or local audio file"
+                )
+            
+            # Submit audio processing task
+            task = celery_app.send_task(
+                'src.celery_app.process_audio_task',
+                args=[process_request.video_id, process_request.audio_uri],
+                kwargs={
+                    'task_id': process_request.task_id,
+                    'dataset': process_request.dataset,
+                    'meta': process_request.meta
+                }
             )
+            
+            message = "Audio processing request accepted"
+            
+        elif process_request.video_uri:
+            # Video processing
+            if not (process_request.video_uri.startswith("s3://") or process_request.video_uri.endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'))):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid video_uri. Must be an S3 URI (s3://bucket/path) or local video file"
+                )
+            
+            # Submit video processing task
+            task = celery_app.send_task(
+                'src.celery_app.process_video_task',
+                args=[process_request.video_id, process_request.video_uri],
+                kwargs={
+                    'task_id': process_request.task_id,
+                    'dataset': process_request.dataset,
+                    'meta': process_request.meta
+                }
+            )
+            
+            message = "Video processing request accepted"
         
-        # Submit task to Celery
-        task = celery_app.send_task(
-            'src.celery_app.process_audio_task',
-            args=[process_request.video_id, process_request.audio_uri],
-            kwargs={
-                'task_id': process_request.task_id,
-                'dataset': process_request.dataset,
-                'meta': process_request.meta
-            }
-        )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Either audio_uri or video_uri must be provided"
+            )
         
         # Record task submission metrics
         metrics_collector.record_task("submitted", "audio_queue")
@@ -177,7 +208,7 @@ async def process_audio(request: Request, process_request: ProcessRequest):
         return ProcessResponse(
             accepted=True,
             celery_task_id=task.id,
-            message="Audio processing request accepted"
+            message=message
         )
         
     except HTTPException:

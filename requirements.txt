@@ -18,6 +18,8 @@ flower==2.0.1
 # === Audio Processing ===
 #############################
 pyloudnorm==0.1.1
+pyannote.audio
+crepe
 accelerate>=0.33.0
 librosa>=0.10.1
 soundfile>=0.12.1
@@ -33,6 +35,8 @@ scikit-learn>=1.3.2
 torch==2.2.2
 torchaudio==2.2.2
 torchvision==0.17.2
+tensorflow-hub
+crepe
 
 #############################
 # === ASR & NLP ===
@@ -40,6 +44,12 @@ torchvision==0.17.2
 openai-whisper==20231117
 spacy==3.7.2
 sentence-transformers==2.2.2
+
+#############################
+# === Audio Analysis ===
+#############################
+crepe==0.0.20
+pyin==0.1.0
 
 #############################
 # === Data Processing ===

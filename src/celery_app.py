@@ -360,6 +360,244 @@ def process_audio_gpu_task(self, video_id: str, audio_uri: str, **kwargs):
         raise
 
 
+@celery_app.task(
+    bind=True, 
+    name="src.celery_app.process_video_task",
+    autoretry_for=(Exception,),
+    retry_kwargs={'max_retries': 3, 'countdown': 60},
+    retry_backoff=True,
+    retry_backoff_max=600,
+    retry_jitter=True,
+    queue='audio_queue'
+)
+def process_video_task(self, video_id: str, video_uri: str, **kwargs):
+    """
+    Process video file: extract audio and run all 22 extractors.
+    """
+    import tempfile
+    import os
+    import shutil
+    import time
+    from datetime import datetime
+    from src.extractors.video_audio_extractor import VideoAudioExtractor
+    from src.extractors import discover_extractors
+    from src.storage.s3_client import S3Client
+    from src.utils.logging import get_logger
+    from src.monitor.metrics import MetricsCollector
+
+    logger = get_logger(__name__)
+    metrics_collector = MetricsCollector()
+
+    start_time = time.time()
+    
+    try:
+        # Log task start
+        logger.info(f"Starting video processing task {self.request.id} for video_id={video_id}")
+        
+        # Record task start
+        metrics_collector.record_task("started", "video_queue")
+
+        self.update_state(state="PROGRESS", meta={"progress": 0, "status": "Initializing..."})
+
+        # Initialize S3 client
+        s3_client = S3Client()
+        
+        # Create temporary directory
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Step 1: Download video file (or use local file for testing)
+            self.update_state(state="PROGRESS", meta={"progress": 5, "status": "Loading video..."})
+            
+            if video_uri.startswith("s3://"):
+                # S3 file - download it
+                local_video_path = s3_client.download_file(video_uri, tmp_dir)
+                logger.info(f"Downloaded video to: {local_video_path}")
+            else:
+                # Local file - copy it to temp directory
+                filename = os.path.basename(video_uri)
+                local_video_path = os.path.join(tmp_dir, filename)
+                shutil.copy2(video_uri, local_video_path)
+                logger.info(f"Copied local video to: {local_video_path}")
+
+            # Step 2: Extract audio from video
+            self.update_state(state="PROGRESS", meta={"progress": 15, "status": "Extracting audio from video..."})
+            
+            video_extractor = VideoAudioExtractor()
+            extraction_result = video_extractor.run(local_video_path, tmp_dir)
+            
+            if not extraction_result.get('success'):
+                raise Exception(f"Failed to extract audio from video: {extraction_result.get('error')}")
+            
+            local_audio_path = extraction_result['extracted_audio_path']
+            video_metadata = extraction_result.get('video_metadata', {})
+            audio_info = extraction_result.get('audio_info', {})
+            
+            logger.info(f"Successfully extracted audio to: {local_audio_path}")
+
+            # Step 3: Get all audio extractors
+            self.update_state(state="PROGRESS", meta={"progress": 25, "status": "Initializing extractors..."})
+            extractors = discover_extractors()
+            logger.info(f"Found {len(extractors)} extractors")
+
+            # Step 4: Run all extractors on extracted audio
+            results = []
+            total_extractors = len(extractors)
+            
+            for i, extractor in enumerate(extractors):
+                try:
+                    progress = 25 + int((i / total_extractors) * 70)
+                    self.update_state(
+                        state="PROGRESS", 
+                        meta={
+                            "progress": progress, 
+                            "status": f"Running {extractor.name}...",
+                            "current_extractor": extractor.name,
+                            "extractor_progress": f"{i+1}/{total_extractors}"
+                        }
+                    )
+                    
+                    logger.info(f"Running extractor: {extractor.name}")
+                    result = extractor.run(local_audio_path, tmp_dir)
+                    
+                    # Convert ExtractorResult to dict if needed
+                    if hasattr(result, 'dict'):
+                        result_dict = result.dict()
+                    elif hasattr(result, '__dict__'):
+                        result_dict = result.__dict__
+                    else:
+                        result_dict = result
+                    
+                    # Add video metadata to result
+                    result_dict.update({
+                        "video_id": video_id,
+                        "video_uri": video_uri,
+                        "video_metadata": video_metadata,
+                        "audio_info": audio_info
+                    })
+                    
+                    results.append(result_dict)
+                    logger.info(f"Completed extractor: {extractor.name}")
+                    
+                except Exception as e:
+                    logger.error(f"Extractor {extractor.name} failed: {e}")
+                    # Create a safe error result
+                    error_result = {
+                        "name": extractor.name,
+                        "version": getattr(extractor, 'version', '1.0.0'),
+                        "success": False,
+                        "error": str(e),
+                        "video_id": video_id,
+                        "video_uri": video_uri,
+                        "video_metadata": video_metadata,
+                        "audio_info": audio_info
+                    }
+                    results.append(error_result)
+
+            # Step 5: Create manifest
+            self.update_state(state="PROGRESS", meta={"progress": 95, "status": "Creating manifest..."})
+            
+            manifest = {
+                "video_id": video_id,
+                "task_id": kwargs.get('task_id'),
+                "dataset": kwargs.get('dataset', 'default'),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "extractors": results,
+                "schema_version": "video_audio_manifest_v1",
+                "total_processing_time": time.time() - start_time,
+                "video_metadata": video_metadata,
+                "audio_info": audio_info,
+                "source_type": "video"
+            }
+
+            # Step 6: Save manifest locally FIRST
+            self.update_state(state="PROGRESS", meta={"progress": 98, "status": "Saving results..."})
+            
+            manifest_filename = f"manifest_{video_id}.json"
+            
+            # Save to current working directory (AudioProcessor folder)
+            current_dir = os.getcwd()
+            local_manifest_path = os.path.join(current_dir, manifest_filename)
+            
+            import json
+            with open(local_manifest_path, 'w') as f:
+                json.dump(manifest, f, indent=2)
+            
+            logger.info(f"✅ Manifest saved locally to: {local_manifest_path}")
+            
+            # Set manifest URI to local file
+            manifest_uri = f"file://{local_manifest_path}"
+            
+            # Try S3 upload if configured (optional)
+            try:
+                if hasattr(s3_client, 'bucket') and s3_client.bucket:
+                    s3_uri = s3_client.upload_file(
+                        local_manifest_path, 
+                        f"manifests/{manifest_filename}"
+                    )
+                    manifest_uri = s3_uri
+                    logger.info(f"✅ Manifest also uploaded to S3: {manifest_uri}")
+            except Exception as s3_error:
+                logger.warning(f"⚠️ S3 upload failed (local file still saved): {s3_error}")
+                # Keep local file path
+            
+            manifest["manifest_uri"] = manifest_uri
+
+            # Step 7: Notify MasterML
+            self.update_state(state="PROGRESS", meta={"progress": 99, "status": "Notifying MasterML..."})
+            
+            result = {
+                "status": "completed",
+                "video_id": video_id,
+                "video_uri": video_uri,
+                "manifest_uri": manifest_uri,
+                "total_extractors": len(extractors),
+                "successful_extractors": len([r for r in results if r.get('success', False)]),
+                "processing_time": time.time() - start_time,
+                "video_metadata": video_metadata,
+                "audio_info": audio_info
+            }
+            
+            # Log task completion
+            logger.info(f"Completed video processing task {self.request.id} for video_id={video_id}")
+            
+            # Record metrics
+            metrics_collector.record_task("completed", "video_queue")
+            metrics_collector.record_processing_time("video_queue", time.time() - start_time)
+            
+            # Notify MasterML
+            notify_masterml(video_id, manifest_uri, "completed", result)
+            
+            logger.info(f"Successfully processed video {video_id} in {time.time() - start_time:.2f}s")
+            
+            return result
+
+    except Exception as e:
+        logger.error(f"Error processing video {video_id}: {e}")
+        
+        # Log task failure
+        logger.error(f"Failed video processing task {self.request.id} for video_id={video_id}: {e}")
+        
+        # Record metrics
+        try:
+            metrics_collector.record_task("failed", "video_queue")
+        except Exception as metrics_error:
+            logger.error(f"Failed to record metrics: {metrics_error}")
+        
+        # Notify MasterML
+        try:
+            notify_masterml(video_id, None, "failed", {"error": str(e)})
+        except Exception as notify_error:
+            logger.error(f"Failed to notify MasterML: {notify_error}")
+        
+        # Return error result instead of raising
+        return {
+            "status": "failed",
+            "video_id": video_id,
+            "video_uri": video_uri,
+            "error": str(e),
+            "processing_time": time.time() - start_time
+        }
+
+
 @celery_app.task(name="src.celery_app.health_check_task")
 def health_check_task():
     """
@@ -427,14 +665,15 @@ def notify_masterml(video_id: str, manifest_uri: str, status: str, result: dict 
         }
         
         # Send notification to MasterML
+        headers = {"Content-Type": "application/json"}
+        if settings.masterml_token:
+            headers["Authorization"] = f"Bearer {settings.masterml_token}"
+            
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
                 f"{settings.masterml_url}/api/v1/processors/audio/notify",
                 json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {settings.masterml_token}" if settings.masterml_token else None
-                }
+                headers=headers
             )
             response.raise_for_status()
             

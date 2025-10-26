@@ -47,6 +47,10 @@ WORKDIR /app
 # Копирование исходного кода
 COPY src/ /app/src/
 
+# Копирование тестовых скриптов
+COPY test_*.py /app/
+COPY view_results.py /app/
+
 # Настройка окружения
 ENV PYTHONPATH=/app
 ENV CELERY_BROKER_URL=redis://redis:6379/0

@@ -1,0 +1,164 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ml-service-config
+  namespace: ml-service
+  labels:
+    app.kubernetes.io/name: ml-service-config
+    app.kubernetes.io/part-of: ml-service
+data:
+  # Redis configuration
+  REDIS_URL: "redis://redis-service:6379/0"
+  CELERY_BROKER_URL: "redis://redis-service:6379/0"
+  CELERY_RESULT_BACKEND: "redis://redis-service:6379/0"
+  
+  # S3 configuration
+  S3_ENDPOINT: "https://s3.amazonaws.com"
+  S3_BUCKET: "ml-service-features"
+  S3_REGION: "us-east-1"
+  
+  # MasterML configuration
+  MASTERML_URL: "http://masterml-service:8000"
+  
+  # API configuration
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  
+  # Audio processing configuration
+  AUDIO_SAMPLE_RATE: "22050"
+  AUDIO_MAX_DURATION: "3600"  # 1 hour in seconds
+  AUDIO_CHUNK_SIZE: "1024"
+  
+  # Extractor configuration
+  MFCC_N_MFCC: "13"
+  MFCC_N_MELS: "128"
+  MEL_N_MELS: "64"
+  CHROMA_N_CHROMA: "12"
+  VAD_FRAME_LENGTH: "2048"
+  VAD_HOP_LENGTH: "512"
+  
+  # Performance configuration
+  CELERY_WORKER_CONCURRENCY: "4"
+  CELERY_TASK_TIME_LIMIT: "3600"  # 1 hour
+  CELERY_TASK_SOFT_TIME_LIMIT: "3300"  # 55 minutes
+  
+  # Monitoring configuration
+  PROMETHEUS_ENABLED: "true"
+  METRICS_ENABLED: "true"
+  HEALTH_CHECK_INTERVAL: "30"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audio-processor-config
+  namespace: ml-service
+  labels:
+    app.kubernetes.io/name: audio-processor-config
+    app.kubernetes.io/part-of: ml-service
+data:
+  # Audio processor specific configuration
+  EXTRACTORS_ENABLED: "mfcc,mel,chroma,loudness,vad,clap"
+  EXTRACTORS_DISABLED: ""
+  
+  # CLAP model configuration
+  CLAP_MODEL_NAME: "laion/larger_clap_music_and_speech"
+  CLAP_BATCH_SIZE: "32"
+  
+  # VAD configuration
+  VAD_ENERGY_THRESHOLD: "0.01"
+  VAD_SILENCE_DURATION: "0.5"
+  
+  # Loudness configuration
+  LOUDNESS_TARGET_LUFS: "-23.0"
+  LOUDNESS_TRUE_PEAK: "-1.0"
+  
+  # File processing limits
+  MAX_FILE_SIZE_MB: "500"
+  SUPPORTED_FORMATS: "wav,mp3,flac,m4a,aac"
+  
+  # Retry configuration
+  MAX_RETRIES: "3"
+  RETRY_DELAY: "5"
+  RETRY_BACKOFF: "2"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: monitoring-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring-config
+    app.kubernetes.io/part-of: ml-service
+data:
+  # Prometheus configuration
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    
+    rule_files:
+      - "alerts/*.yml"
+    
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+              - alertmanager:9093
+    
+    scrape_configs:
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: kubernetes_pod_name
+      
+      - job_name: 'kubernetes-nodes'
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+      
+      - job_name: 'kubernetes-cadvisor'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor

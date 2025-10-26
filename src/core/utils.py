@@ -119,6 +119,38 @@ def validate_audio_file(file_path: str) -> bool:
     return True
 
 
+def validate_video_file(file_path: str) -> bool:
+    """
+    Validate that the file is a valid video file.
+    
+    Args:
+        file_path: Path to the video file
+        
+    Returns:
+        True if valid, False otherwise
+    """
+    if not os.path.exists(file_path):
+        logger.error(f"File does not exist: {file_path}")
+        return False
+    
+    # Check file extension
+    valid_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv'}
+    file_ext = os.path.splitext(file_path)[1].lower()
+    
+    if file_ext not in valid_extensions:
+        logger.error(f"Invalid video file extension: {file_ext}")
+        return False
+    
+    # Check file size (must be > 0)
+    file_size = os.path.getsize(file_path)
+    if file_size == 0:
+        logger.error(f"Video file is empty: {file_path}")
+        return False
+    
+    logger.debug(f"Video file validation passed: {file_path}")
+    return True
+
+
 def get_audio_info(file_path: str) -> Dict[str, Any]:
     """
     Get basic information about an audio file using ffprobe.
