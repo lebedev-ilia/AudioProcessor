@@ -25,6 +25,7 @@ from .segment_pipeline import SegmentPipeline
 from .extractors import discover_extractors
 from .extractors.video_audio_extractor import VideoAudioExtractor
 from .schemas.models import ExtractorResult, ManifestModel
+from .smart_gpu_detector import get_smart_detector, get_smart_config, is_gpu_available
 from .utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -34,43 +35,62 @@ class AsyncUnifiedAudioProcessor:
     """Async processor that can extract both aggregated and segment features in parallel."""
     
     def __init__(self, config: Optional[SegmentConfig] = None, 
-                 max_cpu_workers: int = 8,
-                 max_gpu_workers: int = 2,
-                 max_io_workers: int = 16,
-                 gpu_batch_size: int = 8):
+                 max_cpu_workers: Optional[int] = None,
+                 max_gpu_workers: Optional[int] = None,
+                 max_io_workers: Optional[int] = None,
+                 gpu_batch_size: Optional[int] = None,
+                 use_smart_detection: bool = True):
         """
-        Initialize async processor.
+        Initialize async processor with smart GPU detection.
         
         Args:
             config: Configuration for segment processing
-            max_cpu_workers: Maximum CPU workers for extractors
-            max_gpu_workers: Maximum GPU workers for extractors
-            max_io_workers: Maximum I/O workers for file operations
-            gpu_batch_size: Batch size for GPU processing
+            max_cpu_workers: Maximum CPU workers (auto-detected if None)
+            max_gpu_workers: Maximum GPU workers (auto-detected if None)
+            max_io_workers: Maximum I/O workers (auto-detected if None)
+            gpu_batch_size: Batch size for GPU processing (auto-detected if None)
+            use_smart_detection: Whether to use smart GPU detection
         """
         self.config = config or get_default_config()
         self.segment_pipeline = SegmentPipeline(self.config)
         
+        # Initialize smart GPU detection
+        if use_smart_detection:
+            self.smart_detector = get_smart_detector()
+            self.smart_config = self.smart_detector.get_smart_config()
+            logger.info("🧠 Using smart GPU detection")
+        else:
+            self.smart_detector = None
+            self.smart_config = None
+            logger.info("⚙️ Using manual configuration")
+        
         # Get available extractors
         self.extractors = discover_extractors()
         
-        # Resource management
-        self.max_cpu_workers = max_cpu_workers
-        self.max_gpu_workers = max_gpu_workers
-        self.max_io_workers = max_io_workers
-        self.gpu_batch_size = gpu_batch_size
+        # Resource management - use smart config if available
+        if self.smart_config:
+            self.max_cpu_workers = max_cpu_workers or self.smart_config.max_cpu_workers
+            self.max_gpu_workers = max_gpu_workers or self.smart_config.max_gpu_workers
+            self.max_io_workers = max_io_workers or self.smart_config.max_io_workers
+            self.gpu_batch_size = gpu_batch_size or self.smart_config.gpu_batch_size
+        else:
+            self.max_cpu_workers = max_cpu_workers or 8
+            self.max_gpu_workers = max_gpu_workers or 2
+            self.max_io_workers = max_io_workers or 16
+            self.gpu_batch_size = gpu_batch_size or 8
         
         # Semaphores for resource control
-        self.cpu_semaphore = asyncio.Semaphore(max_cpu_workers)
+        self.cpu_semaphore = asyncio.Semaphore(self.max_cpu_workers)
         
-        # Only create GPU semaphore if GPU is available
-        import torch
-        if torch.cuda.is_available():
-            self.gpu_semaphore = asyncio.Semaphore(max_gpu_workers)
+        # GPU semaphore - use smart detection
+        if self.smart_config and self.smart_config.gpu_semaphore_enabled:
+            self.gpu_semaphore = asyncio.Semaphore(self.max_gpu_workers)
+            logger.info(f"🔒 GPU semaphore enabled with {self.max_gpu_workers} workers")
         else:
             self.gpu_semaphore = None
+            logger.info("🔓 GPU semaphore disabled - CPU-only mode")
             
-        self.io_semaphore = asyncio.Semaphore(max_io_workers)
+        self.io_semaphore = asyncio.Semaphore(self.max_io_workers)
         
         # Categorize extractors
         self.cpu_extractors = []
@@ -81,27 +101,48 @@ class AsyncUnifiedAudioProcessor:
         logger.info(f"CPU extractors: {len(self.cpu_extractors)}, GPU extractors: {len(self.gpu_extractors)}")
     
     def _categorize_extractors(self):
-        """Categorize extractors by resource requirements."""
-        for extractor in self.extractors:
-            # Check if GPU is available
-            import torch
-            gpu_available = torch.cuda.is_available()
+        """Categorize extractors by resource requirements using smart detection."""
+        if self.smart_config:
+            # Use smart categorization
+            cpu_extractor_names = set(self.smart_config.cpu_extractors)
+            gpu_extractor_names = set(self.smart_config.gpu_extractors)
+            hybrid_extractor_names = set(self.smart_config.hybrid_extractors)
             
-            if extractor.category == "advanced" or extractor.name in ["advanced_embeddings", "asr_extractor"]:
-                # These are truly GPU-dependent
-                if gpu_available:
+            for extractor in self.extractors:
+                if extractor.name in gpu_extractor_names and self.smart_config.gpu_available:
                     self.gpu_extractors.append(extractor)
-                else:
-                    # Fall back to CPU for these extractors if no GPU
+                elif extractor.name in hybrid_extractor_names:
+                    # Hybrid extractors - use GPU if available, otherwise CPU
+                    if self.smart_config.gpu_available:
+                        self.gpu_extractors.append(extractor)
+                    else:
+                        self.cpu_extractors.append(extractor)
+                elif extractor.name in cpu_extractor_names:
                     self.cpu_extractors.append(extractor)
-            elif extractor.name == "clap_extractor":
-                # CLAP can work on both CPU and GPU
-                if gpu_available:
-                    self.gpu_extractors.append(extractor)
+                else:
+                    # Default to CPU for unknown extractors
+                    self.cpu_extractors.append(extractor)
+        else:
+            # Fallback to manual categorization
+            for extractor in self.extractors:
+                if extractor.category == "advanced" or extractor.name in ["advanced_embeddings", "asr_extractor"]:
+                    # These are truly GPU-dependent
+                    import torch
+                    if torch.cuda.is_available():
+                        self.gpu_extractors.append(extractor)
+                    else:
+                        logger.warning(f"Skipping GPU-dependent extractor {extractor.name} - no GPU available")
+                elif extractor.name == "clap_extractor":
+                    # CLAP can work on CPU, but is better on GPU
+                    import torch
+                    if torch.cuda.is_available():
+                        self.gpu_extractors.append(extractor)
+                    else:
+                        self.cpu_extractors.append(extractor)
                 else:
                     self.cpu_extractors.append(extractor)
-            else:
-                self.cpu_extractors.append(extractor)
+        
+        logger.info(f"🧠 Smart categorization: CPU extractors: {len(self.cpu_extractors)}, GPU extractors: {len(self.gpu_extractors)}")
     
     def _get_segment_extractors(self) -> List[str]:
         """Return list of extractors for per-segment processing."""
