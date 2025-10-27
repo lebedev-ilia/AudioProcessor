@@ -54,7 +54,20 @@ class Settings(BaseSettings):
 
     # === GPU ===
     cuda_visible_devices: str = Field("0", env="CUDA_VISIBLE_DEVICES")
-    use_gpu: bool = Field(False, env="USE_GPU")
+    use_gpu: bool = Field(True, env="USE_GPU")
+    gpu_memory_limit: float = Field(0.8, env="GPU_MEMORY_LIMIT")
+    gpu_batch_size: int = Field(8, env="GPU_BATCH_SIZE")
+    
+    # === Parallel Processing ===
+    max_cpu_workers: int = Field(8, env="MAX_CPU_WORKERS")
+    max_gpu_workers: int = Field(2, env="MAX_GPU_WORKERS")
+    max_io_workers: int = Field(16, env="MAX_IO_WORKERS")
+    max_concurrent_videos: int = Field(4, env="MAX_CONCURRENT_VIDEOS")
+    max_segment_workers: int = Field(8, env="MAX_SEGMENT_WORKERS")
+    segment_batch_size: int = Field(16, env="SEGMENT_BATCH_SIZE")
+    max_s3_downloads: int = Field(16, env="MAX_S3_DOWNLOADS")
+    max_file_operations: int = Field(32, env="MAX_FILE_OPERATIONS")
+    extractor_timeout: int = Field(300, env="EXTRACTOR_TIMEOUT")
 
     # === Security ===
     api_key: Optional[str] = Field(None, env="API_KEY")

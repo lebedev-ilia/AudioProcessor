@@ -1,6 +1,7 @@
 """
 Smart GPU detection and resource management for AudioProcessor.
 Automatically detects GPU availability and configures extractors accordingly.
+Enhanced with GPU-optimized configurations and performance tuning.
 """
 
 import os
@@ -9,6 +10,7 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from .utils.logging import get_logger
+from .gpu_config import get_gpu_config_manager, GPUType, GPUConfig
 
 logger = get_logger(__name__)
 
@@ -24,7 +26,7 @@ class GPUInfo:
 
 @dataclass
 class SmartConfig:
-    """Smart configuration based on available resources."""
+    """Smart configuration based on available resources with GPU optimization."""
     gpu_available: bool
     max_cpu_workers: int
     max_gpu_workers: int
@@ -35,6 +37,12 @@ class SmartConfig:
     hybrid_extractors: List[str]  # Can work on both CPU and GPU
     device: str
     gpu_semaphore_enabled: bool
+    
+    # GPU optimization settings
+    gpu_type: GPUType
+    gpu_config: GPUConfig
+    extractor_configs: Dict[str, Dict[str, Any]]
+    performance_estimates: Dict[str, Any]
 
 class SmartGPUDetector:
     """Smart GPU detection and resource configuration."""
@@ -93,8 +101,15 @@ class SmartGPUDetector:
         )
     
     def _create_smart_config(self) -> SmartConfig:
-        """Create smart configuration based on detected resources."""
-        logger.info("⚙️ Creating smart configuration...")
+        """Create smart configuration based on detected resources with GPU optimization."""
+        logger.info("⚙️ Creating smart configuration with GPU optimization...")
+        
+        # Get GPU configuration manager
+        gpu_config_manager = get_gpu_config_manager()
+        gpu_type = gpu_config_manager.gpu_type
+        gpu_config = gpu_config_manager.get_optimized_config(gpu_type)
+        extractor_configs = gpu_config_manager.get_extractor_configs(gpu_type)
+        performance_estimates = gpu_config_manager.get_performance_estimates(gpu_type)
         
         # Define extractor categories
         cpu_only_extractors = [
@@ -107,74 +122,62 @@ class SmartGPUDetector:
         ]
         
         gpu_optimized_extractors = [
-            "clap_extractor", "asr_extractor", "speaker_diarization_extractor",
-            "emotion_recognition_extractor", "source_separation_extractor",
-            "sound_event_detection_extractor", "advanced_embeddings"
+            "optimized_clap_extractor", "optimized_asr_extractor", "speaker_diarization_extractor",
+            "optimized_emotion_recognition_extractor", "source_separation_extractor",
+            "sound_event_detection_extractor", "optimized_advanced_embeddings"
         ]
         
         hybrid_extractors = [
-            "clap_extractor", "emotion_recognition_extractor"  # Can fallback to CPU
+            "optimized_clap_extractor", "optimized_emotion_recognition_extractor"  # Can fallback to CPU
         ]
         
         if self.gpu_info.available:
             # GPU available - use GPU-optimized configuration
-            logger.info("🚀 GPU mode: Using GPU-optimized configuration")
-            
-            # Calculate optimal worker counts based on GPU memory
-            max_gpu_workers = min(4, self.gpu_info.device_count * 2)  # 2 workers per GPU
-            max_cpu_workers = max(8, os.cpu_count() or 4)  # Use all CPU cores
-            max_io_workers = 16
-            
-            # Calculate GPU batch size based on available memory
-            if self.gpu_info.memory_free:
-                if self.gpu_info.memory_free > 8000:  # > 8GB
-                    gpu_batch_size = 16
-                elif self.gpu_info.memory_free > 4000:  # > 4GB
-                    gpu_batch_size = 8
-                else:
-                    gpu_batch_size = 4
-            else:
-                gpu_batch_size = 8  # Default
+            logger.info(f"🚀 GPU mode: Using {gpu_type.value} GPU-optimized configuration")
+            logger.info(f"   Performance: {performance_estimates['estimated_speedup']} speedup expected")
             
             return SmartConfig(
                 gpu_available=True,
-                max_cpu_workers=max_cpu_workers,
-                max_gpu_workers=max_gpu_workers,
-                max_io_workers=max_io_workers,
-                gpu_batch_size=gpu_batch_size,
+                max_cpu_workers=gpu_config.max_cpu_workers,
+                max_gpu_workers=gpu_config.max_gpu_workers,
+                max_io_workers=gpu_config.max_io_workers,
+                gpu_batch_size=gpu_config.batch_size,
                 cpu_extractors=cpu_only_extractors,
                 gpu_extractors=gpu_optimized_extractors,
                 hybrid_extractors=hybrid_extractors,
                 device="cuda:0",
-                gpu_semaphore_enabled=True
+                gpu_semaphore_enabled=True,
+                gpu_type=gpu_type,
+                gpu_config=gpu_config,
+                extractor_configs=extractor_configs,
+                performance_estimates=performance_estimates
             )
         else:
             # No GPU - use CPU-only configuration
             logger.info("💻 CPU mode: Using CPU-only configuration")
             
-            max_cpu_workers = max(8, os.cpu_count() or 4)  # Use all CPU cores
-            max_io_workers = 16
-            
-            # All extractors run on CPU, but some can be optimized
-            cpu_extractors = cpu_only_extractors + gpu_optimized_extractors
-            
             return SmartConfig(
                 gpu_available=False,
-                max_cpu_workers=max_cpu_workers,
+                max_cpu_workers=gpu_config.max_cpu_workers,
                 max_gpu_workers=0,
-                max_io_workers=max_io_workers,
+                max_io_workers=gpu_config.max_io_workers,
                 gpu_batch_size=1,  # Not used in CPU mode
-                cpu_extractors=cpu_extractors,
+                cpu_extractors=cpu_only_extractors + gpu_optimized_extractors,
                 gpu_extractors=[],  # No GPU extractors in CPU mode
                 hybrid_extractors=hybrid_extractors,
                 device="cpu",
-                gpu_semaphore_enabled=False
+                gpu_semaphore_enabled=False,
+                gpu_type=gpu_type,
+                gpu_config=gpu_config,
+                extractor_configs=extractor_configs,
+                performance_estimates=performance_estimates
             )
     
     def _log_detection_results(self):
         """Log the detection and configuration results."""
         logger.info("📊 Smart GPU Detection Results:")
         logger.info(f"   GPU Available: {self.smart_config.gpu_available}")
+        logger.info(f"   GPU Type: {self.smart_config.gpu_type.value}")
         logger.info(f"   Device: {self.smart_config.device}")
         logger.info(f"   CPU Workers: {self.smart_config.max_cpu_workers}")
         logger.info(f"   GPU Workers: {self.smart_config.max_gpu_workers}")
@@ -184,6 +187,20 @@ class SmartGPUDetector:
         logger.info(f"   CPU Extractors: {len(self.smart_config.cpu_extractors)}")
         logger.info(f"   GPU Extractors: {len(self.smart_config.gpu_extractors)}")
         logger.info(f"   Hybrid Extractors: {len(self.smart_config.hybrid_extractors)}")
+        
+        # Log GPU optimization settings
+        if self.smart_config.gpu_available:
+            logger.info("🚀 GPU Optimization Settings:")
+            logger.info(f"   Mixed Precision: {self.smart_config.gpu_config.mixed_precision}")
+            logger.info(f"   Tensor Core Optimization: {self.smart_config.gpu_config.tensor_core_optimization}")
+            logger.info(f"   Model Caching: {self.smart_config.gpu_config.model_caching}")
+            logger.info(f"   Memory Limit: {self.smart_config.gpu_config.gpu_memory_limit:.1%}")
+            logger.info(f"   Model Precision: {self.smart_config.gpu_config.model_precision}")
+            
+            # Log performance estimates
+            logger.info("📈 Performance Estimates:")
+            for metric, value in self.smart_config.performance_estimates.items():
+                logger.info(f"   {metric.replace('_', ' ').title()}: {value}")
     
     def get_smart_config(self) -> SmartConfig:
         """Get the smart configuration."""

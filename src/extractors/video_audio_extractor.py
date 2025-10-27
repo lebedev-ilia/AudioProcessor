@@ -121,6 +121,11 @@ class VideoAudioExtractor(BaseExtractor):
             Tuple of (audio_path, metadata)
         """
         try:
+            # Check if ffmpeg is available
+            if not self._check_ffmpeg_available():
+                logger.error("FFmpeg is not installed or not in PATH. Please install FFmpeg and add it to your PATH.")
+                return None, {}
+            
             # Generate output audio filename
             video_name = os.path.splitext(os.path.basename(video_path))[0]
             audio_path = os.path.join(output_dir, f"{video_name}_extracted_audio.wav")
@@ -167,6 +172,24 @@ class VideoAudioExtractor(BaseExtractor):
             logger.error(f"Error running ffmpeg: {e}")
             return None, {}
     
+    def _check_ffmpeg_available(self) -> bool:
+        """
+        Check if ffmpeg is available in the system PATH.
+        
+        Returns:
+            True if ffmpeg is available, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ['ffmpeg', '-version'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return False
+    
     def _get_video_metadata(self, video_path: str) -> Dict[str, Any]:
         """
         Get video metadata using ffprobe.
@@ -178,6 +201,11 @@ class VideoAudioExtractor(BaseExtractor):
             Dictionary with video metadata
         """
         try:
+            # Check if ffprobe is available
+            if not self._check_ffprobe_available():
+                logger.warning("ffprobe is not available, returning basic metadata")
+                return self._get_basic_metadata(video_path)
+            
             command = [
                 'ffprobe',
                 '-v', 'quiet',
@@ -196,7 +224,7 @@ class VideoAudioExtractor(BaseExtractor):
             
             if result.returncode != 0:
                 logger.error(f"ffprobe failed: {result.stderr}")
-                return {}
+                return self._get_basic_metadata(video_path)
             
             import json
             info = json.loads(result.stdout)
@@ -235,6 +263,54 @@ class VideoAudioExtractor(BaseExtractor):
             
         except Exception as e:
             logger.error(f"Failed to get video metadata for {video_path}: {e}")
+            return self._get_basic_metadata(video_path)
+    
+    def _check_ffprobe_available(self) -> bool:
+        """
+        Check if ffprobe is available in the system PATH.
+        
+        Returns:
+            True if ffprobe is available, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ['ffprobe', '-version'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return False
+    
+    def _get_basic_metadata(self, video_path: str) -> Dict[str, Any]:
+        """
+        Get basic metadata when ffprobe is not available.
+        
+        Args:
+            video_path: Path to the video file
+            
+        Returns:
+            Dictionary with basic metadata
+        """
+        try:
+            file_size = os.path.getsize(video_path)
+            return {
+                'duration': 0.0,
+                'size': file_size,
+                'bit_rate': 0,
+                'format_name': os.path.splitext(video_path)[1][1:],
+                'format_long_name': f"Unknown {os.path.splitext(video_path)[1][1:]} format",
+                'video_codec': 'unknown',
+                'video_width': 0,
+                'video_height': 0,
+                'video_fps': 0,
+                'audio_codec': 'unknown',
+                'audio_sample_rate': 0,
+                'audio_channels': 0
+            }
+        except Exception as e:
+            logger.error(f"Failed to get basic metadata for {video_path}: {e}")
             return {}
     
     def _get_audio_info(self, audio_path: str) -> Dict[str, Any]:

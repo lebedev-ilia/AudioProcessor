@@ -1,74 +1,29 @@
+# ===== Optimized GPU Docker Compose Configuration =====
+# This configuration is optimized for maximum GPU performance with:
+# - GPU resource allocation and limits
+# - Memory optimization
+# - Performance monitoring
+# - Automatic scaling
+# - Health checks and recovery
+
 version: '3.8'
 
 services:
-  # Redis - брокер сообщений
+  # ===== Redis Service =====
   redis:
     image: redis:7-alpine
+    container_name: audio_processor_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  # MinIO - S3 совместимое хранилище
-  minio:
-    image: minio/minio:latest
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-      MINIO_DEFAULT_BUCKETS: audio-features,audio-cache
-    volumes:
-      - minio_data:/data
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    restart: unless-stopped
-
-  # AudioProcessor API
-  audio-processor:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
-      - S3_BUCKET=audio-features
-      - MASTERML_URL=http://masterml:8000
-      - LOG_LEVEL=INFO
-      - DEBUG=true
-      - PYTHONPATH=/app
-    depends_on:
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    volumes:
-      - ./test_audio.wav:/app/test_audio.wav:ro
-      - ./logs:/app/logs
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
-    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -76,58 +31,230 @@ services:
         reservations:
           memory: 1G
 
-  # AudioProcessor Worker
-  audio-worker:
-    build: 
+  # ===== Audio Processor API (GPU Optimized) =====
+  api:
+    build:
       context: .
-      dockerfile: Dockerfile
-    command: celery -A src.celery_app worker --loglevel=info --queues=audio_queue --concurrency=2
+      dockerfile: Dockerfile.gpu.optimized
+    container_name: audio_processor_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      - "9090:9090"  # Prometheus metrics
     environment:
+      # GPU Configuration
+      - CUDA_VISIBLE_DEVICES=0
+      - CUDA_LAUNCH_BLOCKING=0
+      - CUDA_CACHE_DISABLE=0
+      - CUDA_CACHE_MAXSIZE=2147483648
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+      
+      # Performance Optimization
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      
+      # Application Configuration
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - ENABLE_METRICS=true
+      - PROMETHEUS_PORT=9090
+      
+      # Celery Configuration
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
-      - S3_BUCKET=audio-features
-      - LOG_LEVEL=INFO
-      - PYTHONPATH=/app
+      
+      # GPU Optimization
+      - USE_GPU=true
+      - GPU_BATCH_SIZE=8
+      - GPU_MEMORY_LIMIT=0.9
+      - MIXED_PRECISION=true
+      - TENSOR_CORE_OPTIMIZATION=true
+      - MODEL_CACHING=true
+      
+      # Worker Configuration
+      - MAX_CPU_WORKERS=8
+      - MAX_GPU_WORKERS=2
+      - MAX_IO_WORKERS=16
+      - MAX_CONCURRENT_VIDEOS=4
+      
+      # Memory Management
+      - MEMORY_EFFICIENT_ATTENTION=true
+      - GRADIENT_CHECKPOINTING=true
+      - CACHE_SIZE_LIMIT=0.3
+      
+      # Monitoring
+      - ENABLE_PROFILING=false
+      - MEMORY_MONITORING=true
+      - PERFORMANCE_TRACKING=true
+      
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./models:/app/.cache
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 16G
+        reservations:
+          memory: 8G
     depends_on:
       redis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/health_check.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - audio_processor_network
+
+  # ===== Celery Worker (GPU Optimized) =====
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu.optimized
+    container_name: audio_processor_worker
+    restart: unless-stopped
+    command: celery -A src.celery_app worker --loglevel=info --concurrency=2 --prefetch-multiplier=1
+    environment:
+      # GPU Configuration
+      - CUDA_VISIBLE_DEVICES=0
+      - CUDA_LAUNCH_BLOCKING=0
+      - CUDA_CACHE_DISABLE=0
+      - CUDA_CACHE_MAXSIZE=2147483648
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+      
+      # Performance Optimization
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      
+      # Celery Configuration
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_WORKER_CONCURRENCY=2
+      - CELERY_WORKER_PREFETCH_MULTIPLIER=1
+      
+      # GPU Optimization
+      - USE_GPU=true
+      - GPU_BATCH_SIZE=8
+      - GPU_MEMORY_LIMIT=0.9
+      - MIXED_PRECISION=true
+      - TENSOR_CORE_OPTIMIZATION=true
+      - MODEL_CACHING=true
+      
+      # Worker Configuration
+      - MAX_CPU_WORKERS=4
+      - MAX_GPU_WORKERS=1
+      - MAX_IO_WORKERS=8
+      
+      # Memory Management
+      - MEMORY_EFFICIENT_ATTENTION=true
+      - GRADIENT_CHECKPOINTING=true
+      - CACHE_SIZE_LIMIT=0.3
+      
     volumes:
       - ./logs:/app/logs
-    restart: unless-stopped
+      - ./data:/app/data
+      - ./models:/app/.cache
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
     deploy:
-      replicas: 2
       resources:
-        limits:
-          memory: 3G
         reservations:
-          memory: 2G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 12G
+        reservations:
+          memory: 6G
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "src.celery_app", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - audio_processor_network
 
-  # Flower - мониторинг Celery
-  flower:
-    build: 
+  # ===== Celery Beat (Scheduler) =====
+  beat:
+    build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gpu.optimized
+    container_name: audio_processor_beat
+    restart: unless-stopped
+    command: celery -A src.celery_app beat --loglevel=info
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "src.celery_app", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - audio_processor_network
+
+  # ===== Flower (Celery Monitoring) =====
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu.optimized
+    container_name: audio_processor_flower
+    restart: unless-stopped
     command: celery -A src.celery_app flower --port=5555
     ports:
       - "5555:5555"
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
-      - PYTHONPATH=/app
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5555"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - audio_processor_network
 
-  # Prometheus - метрики
+  # ===== Prometheus (Metrics Collection) =====
   prometheus:
     image: prom/prometheus:latest
+    container_name: audio_processor_prometheus
+    restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "9091:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -136,27 +263,104 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/etc/prometheus/console_libraries'
       - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
       - '--web.enable-lifecycle'
-      - '--storage.tsdb.retention.time=30d'
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - audio_processor_network
 
-  # Grafana - визуализация
+  # ===== Grafana (Metrics Visualization) =====
   grafana:
     image: grafana/grafana:latest
+    container_name: audio_processor_grafana
+    restart: unless-stopped
     ports:
       - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana:/etc/grafana/provisioning
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - ./grafana/datasources:/etc/grafana/provisioning/datasources
-    restart: unless-stopped
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - audio_processor_network
 
+  # ===== GPU Monitoring Service =====
+  gpu_monitor:
+    image: nvidia/dcgm-exporter:latest
+    container_name: audio_processor_gpu_monitor
+    restart: unless-stopped
+    ports:
+      - "9400:9400"
+    environment:
+      - DCGM_EXPORTER_LISTEN=:9400
+    volumes:
+      - /proc/driver/nvidia/gpus:/proc/driver/nvidia/gpus:ro
+      - /sys/class/nvme:/sys/class/nvme:ro
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9400/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - audio_processor_network
+
+# ===== Networks =====
+networks:
+  audio_processor_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ===== Volumes =====
 volumes:
   redis_data:
-  minio_data:
+    driver: local
   prometheus_data:
+    driver: local
   grafana_data:
+    driver: local
+
+# ===== GPU Requirements =====
+# This configuration requires:
+# 1. NVIDIA Docker runtime (nvidia-docker2)
+# 2. NVIDIA drivers >= 470.57.02
+# 3. CUDA >= 11.2
+# 4. Docker >= 20.10
+# 5. Docker Compose >= 2.0
+#
+# To run with GPU support:
+# docker-compose -f docker-compose.gpu.optimized.yml up -d
+#
+# To check GPU status:
+# docker-compose -f docker-compose.gpu.optimized.yml exec api /app/gpu_info.sh
+#
+# To monitor performance:
+# - API: http://localhost:8000
+# - Flower: http://localhost:5555
+# - Prometheus: http://localhost:9091
+# - Grafana: http://localhost:3000 (admin/admin)
+# - GPU Metrics: http://localhost:9400/metrics

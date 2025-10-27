@@ -1,13 +1,13 @@
 """
-Unified API endpoints for audio processing.
+Unified API endpoints for async GPU-optimized audio processing.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, Query
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from .config import get_settings, Settings
 from .schemas.unified_models import (
@@ -19,10 +19,10 @@ from .schemas.unified_models import (
 )
 from .celery_app import celery_app
 from .unified_celery_tasks import (
-    unified_process_task,
-    unified_batch_task,
-    unified_process_video_task,
-    unified_process_audio_task
+    async_unified_process_task,
+    async_unified_batch_task,
+    async_unified_process_video_task,
+    async_unified_process_audio_task
 )
 from .utils.logging import get_logger, request_logger
 
@@ -42,18 +42,28 @@ settings = get_settings()
 @limiter.limit("10/minute")
 async def unified_process_audio(
     request: Request, 
-    process_request: UnifiedProcessRequest
+    process_request: UnifiedProcessRequest,
+    max_cpu_workers: int = Query(8, description="Maximum CPU workers for extractors"),
+    max_gpu_workers: int = Query(2, description="Maximum GPU workers for extractors"),
+    max_io_workers: int = Query(16, description="Maximum I/O workers for file operations"),
+    gpu_batch_size: int = Query(8, description="Batch size for GPU processing")
 ):
     """
-    Unified audio processing endpoint.
+    Unified async audio processing endpoint with GPU optimization.
     
     This endpoint can extract:
     - Only aggregated features (traditional AudioProcessor behavior)
     - Only per-segment sequences 
     - Both aggregated features AND per-segment sequences
     
+    All extractors run in parallel for maximum performance with GPU optimization.
+    
     Args:
         process_request: Unified processing request
+        max_cpu_workers: Maximum CPU workers for extractors
+        max_gpu_workers: Maximum GPU workers for extractors
+        max_io_workers: Maximum I/O workers for file operations
+        gpu_batch_size: Batch size for GPU processing
         
     Returns:
         Unified processing response with task ID
@@ -83,7 +93,7 @@ async def unified_process_audio(
         # Choose appropriate task based on input type
         if process_request.audio_uri:
             task = celery_app.send_task(
-                'src.unified_celery_tasks.unified_process_audio_task',
+                'src.unified_celery_tasks.async_unified_process_audio_task',
                 args=[
                     process_request.video_id,
                     process_request.audio_uri,
@@ -93,13 +103,17 @@ async def unified_process_audio(
                     process_request.output_dir,
                     process_request.task_id,
                     process_request.dataset,
-                    process_request.meta
+                    process_request.meta,
+                    max_cpu_workers,
+                    max_gpu_workers,
+                    max_io_workers,
+                    gpu_batch_size
                 ]
             )
-            message = "Unified audio processing request accepted"
+            message = "Unified async audio processing request accepted"
         else:
             task = celery_app.send_task(
-                'src.unified_celery_tasks.unified_process_video_task',
+                'src.unified_celery_tasks.async_unified_process_video_task',
                 args=[
                     process_request.video_id,
                     process_request.video_uri,
@@ -109,13 +123,17 @@ async def unified_process_audio(
                     process_request.output_dir,
                     process_request.task_id,
                     process_request.dataset,
-                    process_request.meta
+                    process_request.meta,
+                    max_cpu_workers,
+                    max_gpu_workers,
+                    max_io_workers,
+                    gpu_batch_size
                 ]
             )
-            message = "Unified video processing request accepted"
+            message = "Unified async video processing request accepted"
         
-        logger.info(f"Submitted unified processing task {task.id} for video_id: {process_request.video_id}, "
-                   f"mode: {processing_mode.value}")
+        logger.info(f"Submitted unified async processing task {task.id} for video_id: {process_request.video_id}, "
+                   f"mode: {processing_mode.value}, workers: CPU={max_cpu_workers}, GPU={max_gpu_workers}")
         
         return UnifiedProcessResponse(
             accepted=True,
@@ -127,7 +145,7 @@ async def unified_process_audio(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in unified processing request: {e}")
+        logger.error(f"Error in unified async processing request: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -135,77 +153,90 @@ async def unified_process_audio(
 @limiter.limit("5/minute")
 async def unified_batch_process(
     request: Request,
-    batch_request: BatchProcessRequest
+    batch_request: BatchProcessRequest,
+    max_concurrent_videos: int = Query(4, description="Maximum concurrent video processing"),
+    max_cpu_workers: int = Query(8, description="Maximum CPU workers for extractors"),
+    max_gpu_workers: int = Query(2, description="Maximum GPU workers for extractors"),
+    max_io_workers: int = Query(16, description="Maximum I/O workers for file operations"),
+    gpu_batch_size: int = Query(8, description="Batch size for GPU processing")
 ):
     """
-    Unified batch processing endpoint.
+    Unified async batch processing endpoint with GPU optimization.
     
-    Process multiple videos in batch with unified processing.
+    Process multiple videos concurrently with parallel extractors.
     
     Args:
         batch_request: Batch processing request
+        max_concurrent_videos: Maximum concurrent video processing
+        max_cpu_workers: Maximum CPU workers for extractors
+        max_gpu_workers: Maximum GPU workers for extractors
+        max_io_workers: Maximum I/O workers for file operations
+        gpu_batch_size: Batch size for GPU processing
         
     Returns:
         Batch processing response with task ID
     """
     try:
-        # Validate videos list
+        # Validate batch request
         if not batch_request.videos:
             raise HTTPException(
                 status_code=400,
                 detail="Videos list cannot be empty"
             )
         
-        # Validate each video
-        for i, video in enumerate(batch_request.videos):
-            if "video_id" not in video:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Video {i}: video_id is required"
-                )
-            
-            if "audio_uri" not in video and "video_uri" not in video:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Video {i}: Either audio_uri or video_uri must be provided"
-                )
+        if len(batch_request.videos) > 100:  # Reasonable limit
+            raise HTTPException(
+                status_code=400,
+                detail="Too many videos in batch. Maximum 100 videos per batch."
+            )
         
-        # Submit batch task
+        # Determine processing mode
+        processing_mode = batch_request.processing_mode
+        if batch_request.aggregates_only:
+            processing_mode = ProcessingMode.AGGREGATES_ONLY
+        
+        # Submit async batch task
         task = celery_app.send_task(
-            'src.unified_celery_tasks.unified_batch_task',
+            'src.unified_celery_tasks.async_unified_batch_task',
             args=[
                 batch_request.videos,
-                batch_request.processing_mode.value,
+                processing_mode.value,
                 batch_request.segment_config,
                 batch_request.extractor_names,
                 batch_request.output_dir,
-                None,  # task_id
-                "batch"  # dataset
+                batch_request.task_id,
+                batch_request.dataset,
+                max_concurrent_videos,
+                max_cpu_workers,
+                max_gpu_workers,
+                max_io_workers,
+                gpu_batch_size
             ]
         )
         
-        logger.info(f"Submitted unified batch processing task {task.id} for {len(batch_request.videos)} videos, "
-                   f"mode: {batch_request.processing_mode.value}")
+        logger.info(f"Submitted unified async batch processing task {task.id} for {len(batch_request.videos)} videos, "
+                   f"mode: {processing_mode.value}, concurrent: {max_concurrent_videos}, "
+                   f"workers: CPU={max_cpu_workers}, GPU={max_gpu_workers}")
         
         return BatchProcessResponse(
             accepted=True,
             celery_task_id=task.id,
-            total_videos=len(batch_request.videos),
-            processing_mode=batch_request.processing_mode,
-            message=f"Unified batch processing started for {len(batch_request.videos)} videos"
+            message=f"Unified async batch processing request accepted for {len(batch_request.videos)} videos",
+            processing_mode=processing_mode,
+            total_videos=len(batch_request.videos)
         )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in unified batch processing request: {e}")
+        logger.error(f"Error in unified async batch processing request: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/task/{task_id}")
 async def get_unified_task_status(task_id: str):
     """
-    Get the status of a unified processing task.
+    Get the status of a unified async processing task.
     
     Args:
         task_id: The task identifier
@@ -285,7 +316,15 @@ async def get_unified_config():
                     "category": getattr(extractor, 'category', 'unknown')
                 }
                 for extractor in extractors
-            ]
+            ],
+            "async_processing": True,
+            "gpu_optimization": True,
+            "parallel_extractors": True,
+            "default_max_cpu_workers": 8,
+            "default_max_gpu_workers": 2,
+            "default_max_io_workers": 16,
+            "default_gpu_batch_size": 8,
+            "default_max_concurrent_videos": 4
         }
         
     except Exception as e:
@@ -296,7 +335,7 @@ async def get_unified_config():
 @router.get("/examples")
 async def get_unified_examples():
     """
-    Get example requests for unified processing.
+    Get example requests for unified async processing.
     
     Returns:
         Example requests for different processing modes
@@ -354,5 +393,12 @@ async def get_unified_examples():
                 "segment_len": 3.0,
                 "max_seq_len": 128
             }
+        },
+        "query_parameters": {
+            "max_cpu_workers": 8,
+            "max_gpu_workers": 2,
+            "max_io_workers": 16,
+            "gpu_batch_size": 8,
+            "max_concurrent_videos": 4
         }
     }

@@ -1,35 +1,47 @@
 """
-Embedding compression module for reducing dimensionality of large embeddings.
+GPU-accelerated embedding compression module for reducing dimensionality of large embeddings.
 
-This module provides PCA-based compression for high-dimensional embeddings
-like CLAP, wav2vec, and YAMNet to make them suitable for transformer models.
+This module provides GPU-accelerated PCA-based compression for high-dimensional embeddings
+like CLAP, wav2vec, and YAMNet using cuML and CuPy for maximum performance.
 """
 
+import torch
 import numpy as np
-import joblib
+import cupy as cp
 import os
 from typing import Dict, Any, List, Optional, Union
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 import logging
 from .segment_config import SegmentConfig
+
+# Try to import cuML, fallback to CPU if not available
+try:
+    import cuml
+    from cuml.decomposition import PCA as cuMLPCA
+    from cuml.preprocessing import StandardScaler as cuMLStandardScaler
+    CUML_AVAILABLE = True
+except ImportError:
+    CUML_AVAILABLE = False
+    from sklearn.decomposition import PCA as cuMLPCA
+    from sklearn.preprocessing import StandardScaler as cuMLStandardScaler
 
 logger = logging.getLogger(__name__)
 
 
-class EmbeddingCompressor:
-    """Compressor for high-dimensional embeddings using PCA."""
+class GPUEmbeddingCompressor:
+    """GPU-accelerated compressor for high-dimensional embeddings using cuML PCA."""
     
-    def __init__(self, config: SegmentConfig):
+    def __init__(self, config: SegmentConfig, device: str = "cuda"):
         """
-        Initialize embedding compressor.
+        Initialize GPU embedding compressor.
         
         Args:
             config: Configuration containing PCA dimensions
+            device: Device to use for processing ("cuda" or "cpu")
         """
         self.config = config
         self.pca_dims = config.pca_dims
         self.artifacts_dir = config.artifacts_dir
+        self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
         
         # PCA models for different embedding types
         self.pca_models = {}
@@ -38,15 +50,21 @@ class EmbeddingCompressor:
         # Ensure artifacts directory exists
         os.makedirs(self.artifacts_dir, exist_ok=True)
         
-        logger.info(f"Initialized EmbeddingCompressor with PCA dims: {self.pca_dims}")
+        # Check cuML availability
+        if self.device == "cuda" and not CUML_AVAILABLE:
+            logger.info("cuML not available, using CPU fallback (sklearn) for PCA compression")
+            self.device = "cpu"
+        
+        logger.info(f"GPU Embedding Compressor initialized on device: {self.device}")
+        logger.info(f"cuML available: {CUML_AVAILABLE}")
     
     def fit_pca_models(
         self, 
         embedding_data: Dict[str, List[np.ndarray]],
         save_models: bool = True
-    ) -> Dict[str, PCA]:
+    ) -> Dict[str, Any]:
         """
-        Fit PCA models on training data.
+        Fit PCA models on training data using GPU acceleration.
         
         Args:
             embedding_data: Dictionary with embedding type -> list of arrays
@@ -67,7 +85,7 @@ class EmbeddingCompressor:
                 continue
             
             target_dim = self.pca_dims[embedding_type]
-            logger.info(f"Fitting PCA for {embedding_type}: {len(embedding_list)} samples -> {target_dim} dims")
+            logger.info(f"Fitting GPU PCA for {embedding_type}: {len(embedding_list)} samples -> {target_dim} dims")
             
             try:
                 # Stack all embeddings
@@ -76,17 +94,42 @@ class EmbeddingCompressor:
                 
                 logger.info(f"Stacked embeddings shape: {X.shape}")
                 
-                # Fit scaler
-                scaler = StandardScaler()
-                X_scaled = scaler.fit_transform(X)
-                
-                # Fit PCA
-                pca = PCA(
-                    n_components=min(target_dim, original_dim),
-                    svd_solver='auto',
-                    random_state=42
-                )
-                X_transformed = pca.fit_transform(X_scaled)
+                if self.device == "cuda" and CUML_AVAILABLE:
+                    # Use cuML for GPU acceleration
+                    X_gpu = cp.asarray(X)
+                    
+                    # Fit scaler on GPU
+                    scaler = cuMLStandardScaler()
+                    X_scaled = scaler.fit_transform(X_gpu)
+                    
+                    # Fit PCA on GPU
+                    pca = cuMLPCA(
+                        n_components=min(target_dim, original_dim),
+                        random_state=42
+                    )
+                    X_transformed = pca.fit_transform(X_scaled)
+                    
+                    # Convert back to CPU for storage
+                    X_transformed_cpu = cp.asnumpy(X_transformed)
+                    explained_var = cp.asnumpy(pca.explained_variance_ratio_)
+                    
+                else:
+                    # Fallback to CPU
+                    from sklearn.decomposition import PCA
+                    from sklearn.preprocessing import StandardScaler
+                    
+                    # Fit scaler
+                    scaler = StandardScaler()
+                    X_scaled = scaler.fit_transform(X)
+                    
+                    # Fit PCA
+                    pca = PCA(
+                        n_components=min(target_dim, original_dim),
+                        svd_solver='auto',
+                        random_state=42
+                    )
+                    X_transformed = pca.fit_transform(X_scaled)
+                    explained_var = pca.explained_variance_ratio_
                 
                 # Store models
                 self.pca_models[embedding_type] = pca
@@ -94,8 +137,8 @@ class EmbeddingCompressor:
                 fitted_models[embedding_type] = pca
                 
                 # Log explained variance
-                explained_var = np.sum(pca.explained_variance_ratio_)
-                logger.info(f"PCA for {embedding_type}: {explained_var:.3f} variance explained")
+                explained_var_sum = np.sum(explained_var)
+                logger.info(f"PCA for {embedding_type}: {explained_var_sum:.3f} variance explained")
                 
                 # Save models if requested
                 if save_models:
@@ -119,10 +162,12 @@ class EmbeddingCompressor:
         
         for embedding_type in self.pca_dims.keys():
             try:
-                pca_path = os.path.join(self.artifacts_dir, f"pca_{embedding_type}.joblib")
-                scaler_path = os.path.join(self.artifacts_dir, f"scaler_{embedding_type}.joblib")
+                pca_path = os.path.join(self.artifacts_dir, f"gpu_pca_{embedding_type}.joblib")
+                scaler_path = os.path.join(self.artifacts_dir, f"gpu_scaler_{embedding_type}.joblib")
                 
                 if os.path.exists(pca_path) and os.path.exists(scaler_path):
+                    import joblib
+                    
                     pca = joblib.load(pca_path)
                     scaler = joblib.load(scaler_path)
                     
@@ -130,13 +175,13 @@ class EmbeddingCompressor:
                     self.scalers[embedding_type] = scaler
                     loaded_models[embedding_type] = True
                     
-                    logger.info(f"Loaded PCA model for {embedding_type}")
+                    logger.info(f"Loaded GPU PCA model for {embedding_type}")
                 else:
                     loaded_models[embedding_type] = False
-                    logger.warning(f"PCA model files not found for {embedding_type}")
+                    logger.warning(f"GPU PCA model files not found for {embedding_type}")
                     
             except Exception as e:
-                logger.error(f"Failed to load PCA model for {embedding_type}: {e}")
+                logger.error(f"Failed to load GPU PCA model for {embedding_type}: {e}")
                 loaded_models[embedding_type] = False
         
         return loaded_models
@@ -147,7 +192,7 @@ class EmbeddingCompressor:
         embedding_type: str
     ) -> Optional[np.ndarray]:
         """
-        Compress a single embedding using fitted PCA model.
+        Compress a single embedding using fitted PCA model with GPU acceleration.
         
         Args:
             embedding: Input embedding (array or list)
@@ -176,9 +221,20 @@ class EmbeddingCompressor:
             pca = self.pca_models[embedding_type]
             scaler = self.scalers[embedding_type]
             
-            # Scale and transform
-            embedding_scaled = scaler.transform(embedding)
-            embedding_compressed = pca.transform(embedding_scaled)
+            if self.device == "cuda" and CUML_AVAILABLE:
+                # Use GPU acceleration
+                embedding_gpu = cp.asarray(embedding.astype(np.float32))
+                
+                # Scale and transform on GPU
+                embedding_scaled = scaler.transform(embedding_gpu)
+                embedding_compressed = pca.transform(embedding_scaled)
+                
+                # Convert back to CPU
+                embedding_compressed = cp.asnumpy(embedding_compressed)
+            else:
+                # Use CPU
+                embedding_scaled = scaler.transform(embedding)
+                embedding_compressed = pca.transform(embedding_scaled)
             
             # Return as 1D array
             return embedding_compressed.flatten()
@@ -193,7 +249,7 @@ class EmbeddingCompressor:
         embedding_type: str
     ) -> List[Optional[np.ndarray]]:
         """
-        Compress a batch of embeddings.
+        Compress a batch of embeddings using GPU acceleration.
         
         Args:
             embeddings: List of input embeddings
@@ -202,27 +258,77 @@ class EmbeddingCompressor:
         Returns:
             List of compressed embeddings (None for failed compressions)
         """
-        compressed = []
+        if not embeddings:
+            return []
         
-        for embedding in embeddings:
-            compressed_emb = self.compress_embedding(embedding, embedding_type)
-            compressed.append(compressed_emb)
-        
-        return compressed
+        try:
+            # Convert all embeddings to numpy arrays
+            embeddings_array = []
+            for emb in embeddings:
+                if emb is not None:
+                    if isinstance(emb, list):
+                        emb = np.array(emb)
+                    if emb.ndim == 1:
+                        emb = emb.reshape(1, -1)
+                    embeddings_array.append(emb)
+                else:
+                    embeddings_array.append(None)
+            
+            # Filter out None embeddings
+            valid_embeddings = [emb for emb in embeddings_array if emb is not None]
+            valid_indices = [i for i, emb in enumerate(embeddings_array) if emb is not None]
+            
+            if not valid_embeddings:
+                return [None] * len(embeddings)
+            
+            # Stack valid embeddings
+            X = np.vstack(valid_embeddings).astype(np.float32)
+            
+            # Get models
+            pca = self.pca_models[embedding_type]
+            scaler = self.scalers[embedding_type]
+            
+            if self.device == "cuda" and CUML_AVAILABLE:
+                # Use GPU acceleration for batch processing
+                X_gpu = cp.asarray(X)
+                
+                # Scale and transform on GPU
+                X_scaled = scaler.transform(X_gpu)
+                X_compressed = pca.transform(X_scaled)
+                
+                # Convert back to CPU
+                X_compressed = cp.asnumpy(X_compressed)
+            else:
+                # Use CPU
+                X_scaled = scaler.transform(X)
+                X_compressed = pca.transform(X_scaled)
+            
+            # Create result list
+            result = [None] * len(embeddings)
+            for i, idx in enumerate(valid_indices):
+                result[idx] = X_compressed[i]
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to compress batch of {embedding_type} embeddings: {e}")
+            return [None] * len(embeddings)
     
-    def _save_models(self, embedding_type: str, pca: PCA, scaler: StandardScaler):
+    def _save_models(self, embedding_type: str, pca: Any, scaler: Any):
         """Save PCA model and scaler to disk."""
         try:
-            pca_path = os.path.join(self.artifacts_dir, f"pca_{embedding_type}.joblib")
-            scaler_path = os.path.join(self.artifacts_dir, f"scaler_{embedding_type}.joblib")
+            import joblib
+            
+            pca_path = os.path.join(self.artifacts_dir, f"gpu_pca_{embedding_type}.joblib")
+            scaler_path = os.path.join(self.artifacts_dir, f"gpu_scaler_{embedding_type}.joblib")
             
             joblib.dump(pca, pca_path)
             joblib.dump(scaler, scaler_path)
             
-            logger.info(f"Saved PCA model for {embedding_type} to {pca_path}")
+            logger.info(f"Saved GPU PCA model for {embedding_type} to {pca_path}")
             
         except Exception as e:
-            logger.error(f"Failed to save PCA model for {embedding_type}: {e}")
+            logger.error(f"Failed to save GPU PCA model for {embedding_type}: {e}")
     
     def get_model_info(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -234,23 +340,59 @@ class EmbeddingCompressor:
         info = {}
         
         for embedding_type, pca in self.pca_models.items():
-            info[embedding_type] = {
-                "n_components": pca.n_components_,
-                "explained_variance_ratio": pca.explained_variance_ratio_.tolist(),
-                "total_variance_explained": float(np.sum(pca.explained_variance_ratio_)),
-                "mean": pca.mean_.tolist() if hasattr(pca, 'mean_') else None,
-                "components_shape": pca.components_.shape
-            }
+            if self.device == "cuda" and CUML_AVAILABLE:
+                # cuML PCA
+                info[embedding_type] = {
+                    "n_components": pca.n_components,
+                    "explained_variance_ratio": cp.asnumpy(pca.explained_variance_ratio_).tolist(),
+                    "total_variance_explained": float(cp.sum(pca.explained_variance_ratio_).item()),
+                    "components_shape": pca.components_.shape
+                }
+            else:
+                # sklearn PCA
+                info[embedding_type] = {
+                    "n_components": pca.n_components_,
+                    "explained_variance_ratio": pca.explained_variance_ratio_.tolist(),
+                    "total_variance_explained": float(np.sum(pca.explained_variance_ratio_)),
+                    "mean": pca.mean_.tolist() if hasattr(pca, 'mean_') else None,
+                    "components_shape": pca.components_.shape
+                }
         
         return info
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """
+        Get performance statistics for GPU operations.
+        
+        Returns:
+            Dictionary with performance statistics
+        """
+        stats = {
+            "device": self.device,
+            "cuml_available": CUML_AVAILABLE,
+            "models_loaded": len(self.pca_models),
+            "embedding_types": list(self.pca_models.keys())
+        }
+        
+        if self.device == "cuda" and CUML_AVAILABLE:
+            try:
+                # Get GPU memory info
+                mempool = cp.get_default_memory_pool()
+                stats["gpu_memory_used"] = mempool.used_bytes()
+                stats["gpu_memory_total"] = mempool.total_bytes()
+                stats["gpu_memory_available"] = mempool.total_bytes() - mempool.used_bytes()
+            except Exception as e:
+                logger.warning(f"Could not get GPU memory stats: {e}")
+        
+        return stats
 
 
-def collect_embeddings_from_extractors(
+def collect_embeddings_from_extractors_gpu(
     extractor_results: List[Dict[str, Any]],
     embedding_types: List[str] = None
 ) -> Dict[str, List[np.ndarray]]:
     """
-    Collect embeddings from extractor results for PCA training.
+    Collect embeddings from extractor results for GPU PCA training.
     
     Args:
         extractor_results: List of extractor result dictionaries
@@ -302,21 +444,21 @@ def collect_embeddings_from_extractors(
     
     # Log collection results
     for emb_type, embeddings in collected_embeddings.items():
-        logger.info(f"Collected {len(embeddings)} {emb_type} embeddings")
+        logger.info(f"Collected {len(embeddings)} {emb_type} embeddings for GPU PCA")
     
     return collected_embeddings
 
 
-def compress_segment_embeddings(
+def compress_segment_embeddings_gpu(
     segment_features: List[Dict[str, Any]],
-    compressor: EmbeddingCompressor
+    compressor: GPUEmbeddingCompressor
 ) -> List[Dict[str, Any]]:
     """
-    Compress embeddings in segment features.
+    Compress embeddings in segment features using GPU acceleration.
     
     Args:
         segment_features: List of segment feature dictionaries
-        compressor: Fitted embedding compressor
+        compressor: Fitted GPU embedding compressor
         
     Returns:
         List of segment features with compressed embeddings
@@ -328,7 +470,6 @@ def compress_segment_embeddings(
         
         # Compress CLAP embeddings
         if 'clap_mean' in features and features['clap_mean'] is not None:
-            # For now, use mean CLAP embedding (in future, could use per-segment CLAP)
             clap_compressed = compressor.compress_embedding(
                 features['clap_mean'], 'clap'
             )
@@ -359,5 +500,5 @@ def compress_segment_embeddings(
         
         compressed_features.append(compressed_feat)
     
-    logger.info(f"Compressed embeddings for {len(compressed_features)} segments")
+    logger.info(f"GPU-compressed embeddings for {len(compressed_features)} segments")
     return compressed_features

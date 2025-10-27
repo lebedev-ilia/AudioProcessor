@@ -6,6 +6,7 @@ This module provides a GPU batching system that:
 2. Processes batches efficiently on GPU
 3. Manages GPU memory and resources
 4. Provides backpressure control
+5. Integrates with the new GPU optimizer for maximum performance
 """
 
 import asyncio
@@ -20,6 +21,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from .utils.logging import get_logger
+from .gpu_optimizer import get_gpu_optimizer, GPURequest, GPUResponse
 
 logger = get_logger(__name__)
 
@@ -47,13 +49,14 @@ class GPUResponse:
 
 
 class GPUBatcher:
-    """GPU batcher for efficient processing of GPU extractors."""
+    """GPU batcher for efficient processing of GPU extractors with optimization."""
     
     def __init__(self, 
                  batch_size: int = 8,
                  timeout_ms: int = 100,
                  max_queue_size: int = 1000,
-                 gpu_id: int = 0):
+                 gpu_id: int = 0,
+                 use_optimizer: bool = True):
         """
         Initialize GPU batcher.
         
@@ -62,16 +65,24 @@ class GPUBatcher:
             timeout_ms: Maximum wait time in milliseconds before processing batch
             max_queue_size: Maximum queue size for backpressure
             gpu_id: GPU device ID
+            use_optimizer: Whether to use the new GPU optimizer
         """
         self.batch_size = batch_size
         self.timeout_ms = timeout_ms
         self.max_queue_size = max_queue_size
         self.gpu_id = gpu_id
+        self.use_optimizer = use_optimizer
         
-        # Request queue and response storage
-        self.request_queue = Queue(maxsize=max_queue_size)
-        self.pending_requests: Dict[str, GPURequest] = {}
-        self.responses: Dict[str, GPUResponse] = {}
+        # Initialize GPU optimizer if enabled
+        if self.use_optimizer:
+            self.gpu_optimizer = get_gpu_optimizer()
+            logger.info("Using optimized GPU processing")
+        else:
+            self.gpu_optimizer = None
+            # Legacy request queue and response storage
+            self.request_queue = Queue(maxsize=max_queue_size)
+            self.pending_requests: Dict[str, GPURequest] = {}
+            self.responses: Dict[str, GPUResponse] = {}
         
         # Processing state
         self.is_running = False
@@ -88,7 +99,8 @@ class GPUBatcher:
             "total_batches": 0,
             "total_processing_time": 0.0,
             "average_batch_size": 0.0,
-            "queue_overflows": 0
+            "queue_overflows": 0,
+            "optimizer_requests": 0 if use_optimizer else 0
         }
     
     def start(self):
@@ -117,7 +129,10 @@ class GPUBatcher:
                       extractor_name: str,
                       input_data: Any,
                       metadata: Dict[str, Any],
-                      callback: Optional[Callable] = None) -> bool:
+                      callback: Optional[Callable] = None,
+                      priority: int = 0,
+                      memory_requirement: int = 0,
+                      compute_requirement: float = 1.0) -> bool:
         """
         Submit a GPU processing request.
         
@@ -127,36 +142,61 @@ class GPUBatcher:
             input_data: Input data for processing
             metadata: Additional metadata
             callback: Optional callback function
+            priority: Request priority (higher = more important)
+            memory_requirement: Estimated memory requirement in bytes
+            compute_requirement: Estimated compute requirement (0.0-1.0)
             
         Returns:
             True if request was submitted successfully, False if queue is full
         """
-        try:
-            request = GPURequest(
+        if self.use_optimizer and self.gpu_optimizer:
+            # Use optimized GPU processing
+            success = self.gpu_optimizer.submit_request(
                 request_id=request_id,
                 extractor_name=extractor_name,
                 input_data=input_data,
                 metadata=metadata,
-                timestamp=time.time(),
+                priority=priority,
+                memory_requirement=memory_requirement,
+                compute_requirement=compute_requirement,
                 callback=callback
             )
             
-            # Try to add to queue (non-blocking)
-            self.request_queue.put_nowait(request)
+            if success:
+                with self.lock:
+                    self.stats["total_requests"] += 1
+                    self.stats["optimizer_requests"] += 1
             
-            with self.lock:
-                self.pending_requests[request_id] = request
-                self.stats["total_requests"] += 1
-            
-            logger.debug(f"Submitted GPU request: {request_id} for {extractor_name}")
-            return True
-            
-        except:
-            # Queue is full
-            with self.lock:
-                self.stats["queue_overflows"] += 1
-            logger.warning(f"GPU request queue full, dropping request: {request_id}")
-            return False
+            logger.debug(f"Submitted optimized GPU request: {request_id} for {extractor_name}")
+            return success
+        else:
+            # Legacy processing
+            try:
+                request = GPURequest(
+                    request_id=request_id,
+                    extractor_name=extractor_name,
+                    input_data=input_data,
+                    metadata=metadata,
+                    timestamp=time.time(),
+                    callback=callback
+                )
+                
+                # Try to add to queue (non-blocking)
+                self.request_queue.put_nowait(request)
+                
+                with self.lock:
+                    self.pending_requests[request_id] = request
+                    self.stats["total_requests"] += 1
+                
+                logger.debug(f"Submitted legacy GPU request: {request_id} for {extractor_name}")
+                return True
+                
+            except:
+                # Queue is full
+                with self.lock:
+                    self.stats["queue_overflows"] += 1
+                logger.warning(f"GPU request queue full, dropping request: {request_id}")
+                return False
     
     def get_response(self, request_id: str, timeout: float = 30.0) -> Optional[GPUResponse]:
         """
@@ -169,25 +209,30 @@ class GPUBatcher:
         Returns:
             GPUResponse if available, None if timeout
         """
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            with self.lock:
-                if request_id in self.responses:
-                    response = self.responses.pop(request_id)
-                    if request_id in self.pending_requests:
-                        del self.pending_requests[request_id]
-                    return response
+        if self.use_optimizer and self.gpu_optimizer:
+            # Use optimized GPU processing
+            return self.gpu_optimizer.get_response(request_id, timeout)
+        else:
+            # Legacy processing
+            start_time = time.time()
             
-            time.sleep(0.01)  # Small delay to avoid busy waiting
-        
-        # Timeout
-        with self.lock:
-            if request_id in self.pending_requests:
-                del self.pending_requests[request_id]
-        
-        logger.warning(f"Timeout waiting for GPU response: {request_id}")
-        return None
+            while time.time() - start_time < timeout:
+                with self.lock:
+                    if request_id in self.responses:
+                        response = self.responses.pop(request_id)
+                        if request_id in self.pending_requests:
+                            del self.pending_requests[request_id]
+                        return response
+                
+                time.sleep(0.01)  # Small delay to avoid busy waiting
+            
+            # Timeout
+            with self.lock:
+                if request_id in self.pending_requests:
+                    del self.pending_requests[request_id]
+            
+            logger.warning(f"Timeout waiting for GPU response: {request_id}")
+            return None
     
     def _processing_loop(self):
         """Main processing loop for GPU batcher."""
@@ -349,8 +394,18 @@ class GPUBatcher:
         """Get batcher statistics."""
         with self.lock:
             stats = self.stats.copy()
-            stats["queue_size"] = self.request_queue.qsize()
-            stats["pending_requests"] = len(self.pending_requests)
+            
+            if self.use_optimizer and self.gpu_optimizer:
+                # Get optimized stats
+                optimizer_stats = self.gpu_optimizer.get_all_stats()
+                stats["optimizer_stats"] = optimizer_stats
+                stats["queue_size"] = 0  # Not applicable for optimizer
+                stats["pending_requests"] = 0  # Not applicable for optimizer
+            else:
+                # Legacy stats
+                stats["queue_size"] = self.request_queue.qsize()
+                stats["pending_requests"] = len(self.pending_requests)
+            
             stats["average_processing_time"] = (
                 stats["total_processing_time"] / max(1, stats["total_batches"])
             )
@@ -369,18 +424,20 @@ class GPUBatcher:
 
 
 class GPUManager:
-    """Manager for multiple GPU batchers."""
+    """Manager for multiple GPU batchers with optimization."""
     
-    def __init__(self, gpu_count: int = 1, batch_size: int = 8):
+    def __init__(self, gpu_count: int = 1, batch_size: int = 8, use_optimizer: bool = True):
         """
         Initialize GPU manager.
         
         Args:
             gpu_count: Number of GPUs to use
             batch_size: Batch size for each GPU
+            use_optimizer: Whether to use the new GPU optimizer
         """
         self.gpu_count = gpu_count
         self.batch_size = batch_size
+        self.use_optimizer = use_optimizer
         self.batchers: List[GPUBatcher] = []
         self.current_gpu = 0
         
@@ -388,11 +445,12 @@ class GPUManager:
         for gpu_id in range(gpu_count):
             batcher = GPUBatcher(
                 batch_size=batch_size,
-                gpu_id=gpu_id
+                gpu_id=gpu_id,
+                use_optimizer=use_optimizer
             )
             self.batchers.append(batcher)
         
-        logger.info(f"GPU Manager initialized with {gpu_count} GPUs")
+        logger.info(f"GPU Manager initialized with {gpu_count} GPUs (optimizer: {use_optimizer})")
     
     def start(self):
         """Start all GPU batchers."""
@@ -411,14 +469,18 @@ class GPUManager:
                       extractor_name: str,
                       input_data: Any,
                       metadata: Dict[str, Any],
-                      callback: Optional[Callable] = None) -> bool:
+                      callback: Optional[Callable] = None,
+                      priority: int = 0,
+                      memory_requirement: int = 0,
+                      compute_requirement: float = 1.0) -> bool:
         """Submit request to next available GPU batcher."""
         # Round-robin selection
         gpu_id = self.current_gpu
         self.current_gpu = (self.current_gpu + 1) % self.gpu_count
         
         return self.batchers[gpu_id].submit_request(
-            request_id, extractor_name, input_data, metadata, callback
+            request_id, extractor_name, input_data, metadata, callback,
+            priority, memory_requirement, compute_requirement
         )
     
     def get_response(self, request_id: str, timeout: float = 30.0) -> Optional[GPUResponse]:
@@ -452,9 +514,9 @@ def get_gpu_manager() -> GPUManager:
         if torch.cuda.is_available():
             gpu_count = torch.cuda.device_count()
         
-        _gpu_manager = GPUManager(gpu_count=gpu_count)
+        _gpu_manager = GPUManager(gpu_count=gpu_count, use_optimizer=True)
         _gpu_manager.start()
-        logger.info(f"Initialized global GPU manager with {gpu_count} GPUs")
+        logger.info(f"Initialized global GPU manager with {gpu_count} GPUs (optimized)")
     
     return _gpu_manager
 

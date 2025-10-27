@@ -20,7 +20,7 @@ from datetime import datetime
 from .segment_config import SegmentConfig, get_default_config
 from .segment_utils import make_segments, validate_segment_bounds, get_segment_metadata
 from .segment_aggregator import aggregate_all_segments
-from .embedding_compressor import EmbeddingCompressor, collect_embeddings_from_extractors, compress_segment_embeddings
+from .gpu_embedding_compressor import GPUEmbeddingCompressor as EmbeddingCompressor, collect_embeddings_from_extractors_gpu as collect_embeddings_from_extractors, compress_segment_embeddings_gpu as compress_segment_embeddings
 from .segment_selector import select_segments_meta, create_attention_mask, pad_segments_to_max_len, extract_features_from_segment
 from .segment_storage import SegmentStorage, save_artifacts
 
