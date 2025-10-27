@@ -19,8 +19,16 @@ class RhythmicAnalysisExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Rhythmic analysis: beat positions, tempo variability, onset strength"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 22050
         self.hop_length = 512
         self.frame_length = 2048
@@ -71,7 +79,10 @@ class RhythmicAnalysisExtractor(BaseExtractor):
         Returns:
             Dictionary of rhythmic analysis features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Beat positions
         beat_positions = self._extract_beat_positions(audio, sr)
@@ -634,6 +645,7 @@ class RhythmicAnalysisExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python rhythmic_analysis_extractor.py <audio_file>")

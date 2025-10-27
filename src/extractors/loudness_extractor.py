@@ -1,5 +1,5 @@
 """
-RMS/Loudness extractor for audio feature extraction.
+RMS/Loudness extractor for audio feature extraction with GPU fallback.
 
 This extractor implements:
 - RMS (Root Mean Square) energy analysis
@@ -7,11 +7,14 @@ This extractor implements:
 - Peak amplitude detection
 - Clip detection
 - Statistical aggregation
+- GPU acceleration with CPU fallback
 """
 
 import librosa
 import numpy as np
 import soundfile as sf
+import torch
+import torchaudio.transforms as T
 import pyloudnorm as pyln
 from typing import Dict, Any, Tuple
 import logging
@@ -22,28 +25,54 @@ logger = logging.getLogger(__name__)
 
 
 class LoudnessExtractor(BaseExtractor):
-    """Extractor for RMS energy and loudness features."""
+    """Extractor for RMS energy and loudness features with GPU acceleration and CPU fallback."""
     
     name = "loudness_extractor"
-    version = "1.0.0"
-    description = "RMS energy and LUFS loudness feature extraction"
+    version = "2.0.0"
+    description = "RMS energy and LUFS loudness feature extraction with GPU acceleration and CPU fallback"
     category = "core"
-    dependencies = ["librosa", "numpy"]
-    estimated_duration = 2.0
+    dependencies = ["librosa", "numpy", "torch", "torchaudio", "pyloudnorm"]
+    estimated_duration = 1.5  # Faster with GPU
     
-    def __init__(self):
-        """Initialize Loudness extractor with default parameters."""
+    def __init__(self, device: str = "auto"):
+        """
+        Initialize Loudness extractor with GPU acceleration and CPU fallback.
+        
+        Args:
+            device: Device to use for processing ("auto", "cuda", or "cpu")
+        """
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
         
         # RMS parameters
         self.frame_length = 2048  # Frame length for RMS calculation
         self.hop_length = 512  # Hop length for RMS calculation
+        self.sample_rate = 22050
         
         # LUFS parameters
         self.lufs_target = -23.0  # Target LUFS level
         self.lufs_tolerance = 0.1  # Tolerance for LUFS measurement
         
-        self.logger.info(f"Initialized {self.name} v{self.version}")
+        # Initialize GPU transforms if available
+        self.gpu_rms_transform = None
+        if self.device == "cuda":
+            try:
+                self.gpu_rms_transform = T.RMSEnergy(
+                    frame_length=self.frame_length,
+                    hop_length=self.hop_length
+                ).to(self.device)
+                self.logger.info("GPU RMS transform initialized")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize GPU RMS transform: {e}")
+                self.device = "cpu"
+                self.gpu_rms_transform = None
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
     
     def run(self, input_uri: str, tmp_path: str) -> ExtractorResult:
         """
@@ -124,7 +153,7 @@ class LoudnessExtractor(BaseExtractor):
     
     def _extract_rms_features(self, audio: np.ndarray, sample_rate: int) -> Dict[str, Any]:
         """
-        Extract RMS energy features.
+        Extract RMS energy features with GPU acceleration and CPU fallback.
         
         Args:
             audio: Audio signal
@@ -134,12 +163,12 @@ class LoudnessExtractor(BaseExtractor):
             Dictionary with RMS features
         """
         try:
-            # Calculate RMS using librosa
-            rms = librosa.feature.rms(
-                y=audio,
-                frame_length=self.frame_length,
-                hop_length=self.hop_length
-            )[0]  # Remove singleton dimension
+            if self.device == "cuda" and self.gpu_rms_transform is not None:
+                # Use GPU acceleration
+                rms = self._extract_rms_gpu(audio, sample_rate)
+            else:
+                # Use CPU fallback
+                rms = self._extract_rms_cpu(audio, sample_rate)
             
             # Calculate statistics
             rms_mean = float(np.mean(rms))
@@ -166,7 +195,9 @@ class LoudnessExtractor(BaseExtractor):
                 "rms_p75": rms_p75,
                 "rms_range": rms_range,
                 "rms_cv": rms_cv,
-                "rms_array": rms.tolist()  # Full RMS array
+                "rms_array": rms.tolist(),  # Full RMS array
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
             }
             
             self.logger.debug(f"Extracted RMS features: {len(features)} features")
@@ -174,6 +205,46 @@ class LoudnessExtractor(BaseExtractor):
             
         except Exception as e:
             self.logger.error(f"Failed to extract RMS features: {str(e)}")
+            raise
+    
+    def _extract_rms_gpu(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Extract RMS using GPU acceleration."""
+        try:
+            # Convert to tensor and move to GPU
+            audio_tensor = torch.tensor(audio, dtype=torch.float32).unsqueeze(0).to(self.device)
+            
+            # Resample if needed
+            if sample_rate != self.sample_rate:
+                resampler = T.Resample(sample_rate, self.sample_rate).to(self.device)
+                audio_tensor = resampler(audio_tensor)
+            
+            # Extract RMS using GPU
+            with torch.no_grad():
+                rms = self.gpu_rms_transform(audio_tensor)
+                rms = rms.squeeze().cpu().numpy()
+            
+            self.logger.debug(f"Extracted RMS (GPU): {rms.shape}")
+            return rms
+            
+        except Exception as e:
+            self.logger.warning(f"GPU RMS extraction failed, falling back to CPU: {e}")
+            return self._extract_rms_cpu(audio, sample_rate)
+    
+    def _extract_rms_cpu(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Extract RMS using CPU fallback."""
+        try:
+            # Calculate RMS using librosa
+            rms = librosa.feature.rms(
+                y=audio,
+                frame_length=self.frame_length,
+                hop_length=self.hop_length
+            )[0]  # Remove singleton dimension
+            
+            self.logger.debug(f"Extracted RMS (CPU): {rms.shape}")
+            return rms
+            
+        except Exception as e:
+            self.logger.error(f"CPU RMS extraction failed: {str(e)}")
             raise
     
     def _extract_lufs_features(self, audio: np.ndarray, sample_rate: int) -> Dict[str, Any]:

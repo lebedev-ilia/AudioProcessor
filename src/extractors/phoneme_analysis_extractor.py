@@ -19,8 +19,16 @@ class PhonemeAnalysisExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Phoneme analysis: timeline, rate, phonetic features"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 16000  # Standard for phoneme analysis
         self.hop_length = 512
         self.frame_length = 2048
@@ -80,7 +88,10 @@ class PhonemeAnalysisExtractor(BaseExtractor):
         Returns:
             Dictionary of phoneme analysis features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Extract phonetic features
         phonetic_features = self._extract_phonetic_features(audio, sr)
@@ -114,7 +125,10 @@ class PhonemeAnalysisExtractor(BaseExtractor):
         Returns:
             Dictionary of phonetic features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Pitch features
         f0 = librosa.yin(audio, fmin=50, fmax=2000, sr=sr, hop_length=self.hop_length)
@@ -184,7 +198,10 @@ class PhonemeAnalysisExtractor(BaseExtractor):
             peaks, properties = find_peaks(mean_spectrum, height=np.max(mean_spectrum) * 0.1, distance=10)
             
             # Extract first few formant-like frequencies
-            formant_features = {}
+            formant_features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
             for i in range(1, 5):
                 if i <= len(peaks):
                     formant_freq = freqs[peaks[i-1]]
@@ -384,7 +401,10 @@ class PhonemeAnalysisExtractor(BaseExtractor):
         Returns:
             Dictionary with speech rhythm features
         """
-        rhythm_features = {}
+        rhythm_features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Calculate tempo
         tempo, beats = librosa.beat.beat_track(y=audio, sr=sr, hop_length=self.hop_length)
@@ -416,6 +436,7 @@ class PhonemeAnalysisExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python phoneme_analysis_extractor.py <audio_file>")

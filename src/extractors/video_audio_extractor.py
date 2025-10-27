@@ -18,8 +18,16 @@ class VideoAudioExtractor(BaseExtractor):
     Video Audio Extractor for extracting audio from video files.
     """
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.name = "video_audio_extractor"
         self.version = "1.0.0"
         self.description = "Extract audio from video files using ffmpeg"
@@ -342,6 +350,7 @@ class VideoAudioExtractor(BaseExtractor):
 
 if __name__ == "__main__":
     import sys
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python video_audio_extractor.py <video_file>")

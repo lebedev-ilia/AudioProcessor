@@ -19,8 +19,16 @@ class SoundEventDetectionExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Sound event detection: event timeline, acoustic scene classification"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 22050
         self.hop_length = 512
         self.frame_length = 2048
@@ -94,7 +102,10 @@ class SoundEventDetectionExtractor(BaseExtractor):
         Returns:
             Dictionary of sound event detection features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Sound event timeline
         event_timeline = self._detect_sound_events(audio, sr)
@@ -230,7 +241,10 @@ class SoundEventDetectionExtractor(BaseExtractor):
     def _extract_event_features(self, segment: np.ndarray, sr: int) -> Dict[str, Any]:
         """Extract features for event classification"""
         try:
-            features = {}
+            features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
             
             # Energy features
             rms = librosa.feature.rms(y=segment, hop_length=self.hop_length)[0]
@@ -586,7 +600,10 @@ class SoundEventDetectionExtractor(BaseExtractor):
     def _extract_scene_features(self, audio: np.ndarray, sr: int) -> Dict[str, Any]:
         """Extract features for scene classification"""
         try:
-            features = {}
+            features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
             
             # Energy features
             rms = librosa.feature.rms(y=audio, hop_length=self.hop_length)[0]
@@ -831,6 +848,7 @@ class SoundEventDetectionExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python sound_event_detection_extractor.py <audio_file>")

@@ -19,8 +19,16 @@ class QualityExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Audio quality assessment: SNR, clipping, hum detection"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 22050
         self.hop_length = 512
         self.frame_length = 2048
@@ -73,7 +81,10 @@ class QualityExtractor(BaseExtractor):
         Returns:
             Dictionary of quality features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Basic audio properties
         features["duration_seconds"] = len(audio) / sr
@@ -254,7 +265,10 @@ class QualityExtractor(BaseExtractor):
         Returns:
             Dictionary with hum detection features
         """
-        hum_features = {}
+        hum_features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         try:
             # Get frequency spectrum
@@ -301,6 +315,9 @@ class QualityExtractor(BaseExtractor):
             hum_features = {
                 "hum_detected": False,
                 "hum_count": 0
+            ,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
             }
             for hum_freq in self.hum_frequencies:
                 hum_features[f"hum_{hum_freq}hz"] = False
@@ -496,6 +513,7 @@ class QualityExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python quality_extractor.py <audio_file>")

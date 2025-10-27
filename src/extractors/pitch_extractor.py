@@ -1,27 +1,36 @@
 """
-Pitch Extractor for fundamental frequency (f0) estimation
+Pitch Extractor for fundamental frequency (f0) estimation with GPU fallback
 Extracts pitch-related features using multiple algorithms
 """
 
 import os
 import numpy as np
 import librosa
+import torch
 from typing import Dict, Any, Optional
 from src.core.base_extractor import BaseExtractor, ExtractorResult
 
 
 class PitchExtractor(BaseExtractor):
     """
-    Pitch Extractor for fundamental frequency estimation
+    Pitch Extractor for fundamental frequency estimation with GPU fallback
     Uses multiple algorithms: pyin, yin, crepe for robust pitch detection
     """
     
     name = "pitch"
-    version = "1.0.0"
-    description = "Fundamental frequency (f0) estimation using multiple algorithms"
+    version = "2.0.0"
+    description = "Fundamental frequency (f0) estimation using multiple algorithms with GPU fallback"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 22050
         self.hop_length = 512
         self.frame_length = 2048
@@ -74,7 +83,10 @@ class PitchExtractor(BaseExtractor):
         Returns:
             Dictionary of pitch features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # PYIN algorithm (most robust)
         try:
@@ -319,6 +331,7 @@ class PitchExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python pitch_extractor.py <audio_file>")

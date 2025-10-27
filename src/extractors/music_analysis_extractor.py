@@ -19,8 +19,16 @@ class MusicAnalysisExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Music analysis: key/mode, chords, danceability, energy"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 22050
         self.hop_length = 512
         self.frame_length = 2048
@@ -84,7 +92,10 @@ class MusicAnalysisExtractor(BaseExtractor):
         Returns:
             Dictionary of music analysis features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Key and mode detection
         key_mode_features = self._extract_key_mode(audio, sr)
@@ -465,6 +476,9 @@ class MusicAnalysisExtractor(BaseExtractor):
                 "percussive_ratio": float(percussive_ratio),
                 "harmonic_energy": float(harmonic_energy),
                 "percussive_energy": float(percussive_energy)
+            ,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
             }
             
             # Calculate harmonic complexity
@@ -502,6 +516,7 @@ class MusicAnalysisExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python music_analysis_extractor.py <audio_file>")

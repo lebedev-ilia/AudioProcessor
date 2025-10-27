@@ -1,15 +1,18 @@
 """
-Mel Spectrogram extractor for audio feature extraction.
+Mel Spectrogram extractor for audio feature extraction with GPU fallback.
 
 This extractor implements:
 - Mel spectrogram with 64 mel bands
 - Temporal aggregation (mean across time)
 - Optimized mel filterbank parameters
+- GPU acceleration with CPU fallback
 """
 
 import librosa
 import numpy as np
 import soundfile as sf
+import torch
+import torchaudio.transforms as T
 from typing import Dict, Any, Tuple
 import logging
 from src.core.base_extractor import BaseExtractor
@@ -19,18 +22,29 @@ logger = logging.getLogger(__name__)
 
 
 class MelExtractor(BaseExtractor):
-    """Extractor for Mel spectrogram features."""
+    """Extractor for Mel spectrogram features with GPU acceleration and CPU fallback."""
     
     name = "mel_extractor"
-    version = "1.0.0"
-    description = "Mel spectrogram feature extraction with 64 mel bands"
+    version = "2.0.0"
+    description = "Mel spectrogram feature extraction with GPU acceleration and CPU fallback"
     category = "core"
-    dependencies = ["librosa", "numpy"]
-    estimated_duration = 3.0
+    dependencies = ["librosa", "numpy", "torch", "torchaudio"]
+    estimated_duration = 2.0  # Faster with GPU
     
-    def __init__(self):
-        """Initialize Mel extractor with default parameters."""
+    def __init__(self, device: str = "auto"):
+        """
+        Initialize Mel extractor with GPU acceleration and CPU fallback.
+        
+        Args:
+            device: Device to use for processing ("auto", "cuda", or "cpu")
+        """
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
         
         # Mel spectrogram parameters
         self.n_mels = 64  # Number of mel bands (as specified in requirements)
@@ -39,8 +53,28 @@ class MelExtractor(BaseExtractor):
         self.fmin = 0  # Minimum frequency
         self.fmax = None  # Maximum frequency (None = Nyquist)
         self.power = 2.0  # Power for mel spectrogram
+        self.sample_rate = 22050
         
-        self.logger.info(f"Initialized {self.name} v{self.version}")
+        # Initialize GPU transforms if available
+        self.gpu_transform = None
+        if self.device == "cuda":
+            try:
+                self.gpu_transform = T.MelSpectrogram(
+                    sample_rate=self.sample_rate,
+                    n_fft=self.n_fft,
+                    hop_length=self.hop_length,
+                    n_mels=self.n_mels,
+                    f_min=self.fmin,
+                    f_max=self.fmax,
+                    power=self.power
+                ).to(self.device)
+                self.logger.info("GPU Mel transform initialized")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize GPU transform: {e}")
+                self.device = "cpu"
+                self.gpu_transform = None
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
     
     def run(self, input_uri: str, tmp_path: str) -> ExtractorResult:
         """
@@ -113,7 +147,7 @@ class MelExtractor(BaseExtractor):
     
     def _extract_mel_features(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
         """
-        Extract Mel spectrogram features from audio.
+        Extract Mel spectrogram features from audio with GPU acceleration and CPU fallback.
         
         Args:
             audio: Audio signal
@@ -123,7 +157,49 @@ class MelExtractor(BaseExtractor):
             Mel spectrogram features array of shape (n_mels, n_frames)
         """
         try:
-            # Extract Mel spectrogram
+            if self.device == "cuda" and self.gpu_transform is not None:
+                # Use GPU acceleration
+                return self._extract_mel_features_gpu(audio, sample_rate)
+            else:
+                # Use CPU fallback
+                return self._extract_mel_features_cpu(audio, sample_rate)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to extract Mel spectrogram: {str(e)}")
+            raise
+    
+    def _extract_mel_features_gpu(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Extract Mel spectrogram using GPU acceleration."""
+        try:
+            # Convert to tensor and move to GPU
+            audio_tensor = torch.tensor(audio, dtype=torch.float32).unsqueeze(0).to(self.device)
+            
+            # Resample if needed
+            if sample_rate != self.sample_rate:
+                resampler = T.Resample(sample_rate, self.sample_rate).to(self.device)
+                audio_tensor = resampler(audio_tensor)
+            
+            # Extract Mel spectrogram using GPU
+            with torch.no_grad():
+                mel_spec = self.gpu_transform(audio_tensor)
+                
+                # Convert to log scale (dB)
+                mel_spec_db = torch.log10(mel_spec + 1e-10) * 10
+                
+                # Convert back to numpy
+                mel_spec_db = mel_spec_db.squeeze().cpu().numpy()
+            
+            self.logger.debug(f"Extracted Mel spectrogram (GPU): {mel_spec_db.shape}")
+            return mel_spec_db
+            
+        except Exception as e:
+            self.logger.warning(f"GPU Mel extraction failed, falling back to CPU: {e}")
+            return self._extract_mel_features_cpu(audio, sample_rate)
+    
+    def _extract_mel_features_cpu(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Extract Mel spectrogram using CPU fallback."""
+        try:
+            # Extract Mel spectrogram using librosa
             mel_spec = librosa.feature.melspectrogram(
                 y=audio,
                 sr=sample_rate,
@@ -138,11 +214,11 @@ class MelExtractor(BaseExtractor):
             # Convert to log scale (dB)
             mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
             
-            self.logger.debug(f"Extracted Mel spectrogram: {mel_spec_db.shape}")
+            self.logger.debug(f"Extracted Mel spectrogram (CPU): {mel_spec_db.shape}")
             return mel_spec_db
             
         except Exception as e:
-            self.logger.error(f"Failed to extract Mel spectrogram: {str(e)}")
+            self.logger.error(f"CPU Mel extraction failed: {str(e)}")
             raise
     
     def _calculate_temporal_aggregation(self, mel_features: np.ndarray) -> Dict[str, Any]:
@@ -186,6 +262,10 @@ class MelExtractor(BaseExtractor):
             features["mel64_mean_overall"] = float(np.mean(mel_mean))
             features["mel64_std_overall"] = float(np.std(mel_mean))
             features["mel64_range"] = float(np.max(mel_max) - np.min(mel_min))
+            
+            # Add device information
+            features["device_used"] = self.device
+            features["gpu_accelerated"] = self.device == "cuda"
             
             self.logger.debug(f"Calculated temporal aggregation: {len(features)} features")
             return features

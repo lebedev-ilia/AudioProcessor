@@ -19,8 +19,16 @@ class VoiceQualityExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Voice quality assessment: jitter, shimmer, HNR, formants"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 22050
         self.hop_length = 512
         self.frame_length = 2048
@@ -74,7 +82,10 @@ class VoiceQualityExtractor(BaseExtractor):
         Returns:
             Dictionary of voice quality features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Extract pitch for voice quality analysis
         f0 = self._extract_pitch(audio, sr)
@@ -432,7 +443,10 @@ class VoiceQualityExtractor(BaseExtractor):
             formants.sort()
             
             # Extract first 4 formants
-            formant_features = {}
+            formant_features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
             for i in range(1, 5):
                 if i <= len(formants):
                     formant_features[f"formant_f{i}"] = float(formants[i-1])
@@ -538,6 +552,7 @@ class VoiceQualityExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python voice_quality_extractor.py <audio_file>")

@@ -1,10 +1,11 @@
 """
-Tempo Extractor for tempo and rhythm analysis
+Tempo Extractor for tempo and rhythm analysis with GPU fallback
 Extracts tempo (BPM), onset count, and rhythm-related features
 """
 
 import numpy as np
 import librosa
+import torch
 from typing import Dict, Any, Tuple
 from src.core.base_extractor import BaseExtractor, ExtractorResult
 
@@ -19,8 +20,16 @@ class TempoExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Tempo and rhythm analysis: BPM, onset count, beat positions"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 22050
         self.hop_length = 512
         self.frame_length = 2048
@@ -76,7 +85,10 @@ class TempoExtractor(BaseExtractor):
         Returns:
             Dictionary of tempo features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Tempo estimation
         tempo, beats = librosa.beat.beat_track(
@@ -318,6 +330,7 @@ class TempoExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python tempo_extractor.py <audio_file>")

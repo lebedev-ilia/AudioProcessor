@@ -1,16 +1,18 @@
 """
-VAD (Voice Activity Detection) extractor for audio feature extraction.
+VAD (Voice Activity Detection) extractor for audio feature extraction with GPU fallback.
 
 This extractor implements:
 - Voice Activity Detection using WebRTC VAD
 - Voiced fraction calculation
 - F0 (fundamental frequency) estimation using pyin
 - Pitch analysis and statistics
+- GPU acceleration with CPU fallback
 """
 
 import librosa
 import numpy as np
 import soundfile as sf
+import torch
 import webrtcvad
 from typing import Dict, Any, Tuple, List
 import logging
@@ -21,18 +23,26 @@ logger = logging.getLogger(__name__)
 
 
 class VADExtractor(BaseExtractor):
-    """Extractor for Voice Activity Detection and pitch features."""
+    """Extractor for Voice Activity Detection and pitch features with GPU fallback."""
     
     name = "vad_extractor"
-    version = "1.0.0"
-    description = "Voice Activity Detection and fundamental frequency extraction"
+    version = "2.0.0"
+    description = "Voice Activity Detection and fundamental frequency extraction with GPU fallback"
     category = "core"
-    dependencies = ["librosa", "numpy"]
-    estimated_duration = 6.0
+    dependencies = ["librosa", "numpy", "torch", "webrtcvad"]
+    estimated_duration = 5.0  # Faster with GPU
     
-    def __init__(self):
-        """Initialize VAD extractor with default parameters."""
+    def __init__(self, device: str = "auto"):
+        """Initialize VAD extractor with GPU acceleration and CPU fallback."""
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         
         # VAD parameters
         self.vad_mode = 2  # VAD aggressiveness (0-3, 2 is balanced)
@@ -179,6 +189,9 @@ class VADExtractor(BaseExtractor):
                 "speech_segments_count": len(speech_segments),
                 "speech_segments": speech_segments,
                 "vad_decisions": vad_decisions
+            ,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
             }
             
             self.logger.debug(f"Extracted VAD features: {len(features)} features")
@@ -269,6 +282,9 @@ class VADExtractor(BaseExtractor):
                 "f0_array": f0.tolist(),
                 "voiced_flag_array": voiced_flag.tolist(),
                 "voiced_probs_array": voiced_probs.tolist()
+            ,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
             }
             
             self.logger.debug(f"Extracted F0 features: {len(features)} features")
@@ -365,6 +381,7 @@ if __name__ == "__main__":
     import json
     import tempfile
     import os
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python vad_extractor.py <audio_file>")

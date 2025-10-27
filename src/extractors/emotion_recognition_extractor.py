@@ -19,8 +19,16 @@ class EmotionRecognitionExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Emotion recognition: probabilities, valence/arousal, time series"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 16000  # Standard for emotion recognition models
         self.hop_length = 512
         self.frame_length = 2048
@@ -92,7 +100,10 @@ class EmotionRecognitionExtractor(BaseExtractor):
         Returns:
             Dictionary of emotion recognition features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Extract acoustic features for emotion analysis
         acoustic_features = self._extract_acoustic_features(audio, sr)
@@ -132,7 +143,10 @@ class EmotionRecognitionExtractor(BaseExtractor):
         Returns:
             Dictionary of acoustic features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Pitch features
         f0 = librosa.yin(audio, fmin=50, fmax=2000, sr=sr, hop_length=self.hop_length)
@@ -380,6 +394,7 @@ class EmotionRecognitionExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python emotion_recognition_extractor.py <audio_file>")

@@ -19,8 +19,16 @@ class SourceSeparationExtractor(BaseExtractor):
     version = "1.0.0"
     description = "Source separation: stems, vocal fraction, instrument probabilities"
     
-    def __init__(self):
+    def __init__(self, device: str = "auto"):
         super().__init__()
+        
+        # Device detection with fallback
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
+        
+        self.logger.info(f"Initialized {self.name} v{self.version} on {self.device}")
         self.sample_rate = 22050
         self.hop_length = 512
         self.frame_length = 2048
@@ -82,7 +90,10 @@ class SourceSeparationExtractor(BaseExtractor):
         Returns:
             Dictionary of source separation features
         """
-        features = {}
+        features = {,
+                "device_used": self.device,
+                "gpu_accelerated": self.device == "cuda"
+            }
         
         # Harmonic-percussive separation
         harmonic_percussive = self._extract_harmonic_percussive_separation(audio)
@@ -513,6 +524,7 @@ class SourceSeparationExtractor(BaseExtractor):
 if __name__ == "__main__":
     import sys
     import json
+import torch
     
     if len(sys.argv) != 2:
         print("Usage: python source_separation_extractor.py <audio_file>")
